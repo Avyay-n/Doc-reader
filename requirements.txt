@@ -1,0 +1,7 @@
+pdfplumber
+PyPDF2
+paddlepaddle
+paddleocr
+numpy
+ollama
+python-docx
