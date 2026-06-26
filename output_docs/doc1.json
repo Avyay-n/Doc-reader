@@ -1,7 +1,7 @@
 {
   "document_name": "doc1.pdf",
   "total_pages": 5,
-  "total_items": 78,
+  "total_items": 77,
   "pages": [
     {
       "page_number": 1,
@@ -135,105 +135,85 @@
           "Particulars": "Std Ac Room-2-Dw8",
           "Quantity": 3,
           "Rate": 220.0,
-          "Gross Amount": 660.0,
-          "Discount": 0.0
+          "Gross Amount": 660.0
         },
         {
           "Particulars": "PROCEDURE/SERVICE CHARGE",
           "Quantity": null,
           "Rate": null,
-          "Gross Amount": 220.0,
-          "Discount": 0.0
+          "Gross Amount": 220.0
         },
         {
           "Particulars": "Ecg",
           "Quantity": 1,
           "Rate": 110.0,
-          "Gross Amount": 110.0,
-          "Discount": 0.0
+          "Gross Amount": 110.0
         },
         {
           "Particulars": "8x10 Film",
           "Quantity": 1,
           "Rate": 66.0,
-          "Gross Amount": 66.0,
-          "Discount": 0.0
+          "Gross Amount": 66.0
         },
         {
           "Particulars": "Xray Chest - Pa View",
           "Quantity": 1,
           "Rate": 165.0,
-          "Gross Amount": 165.0,
-          "Discount": 0.0
+          "Gross Amount": 165.0
         },
         {
           "Particulars": "10 Ml Syringe",
           "Quantity": 5,
           "Rate": 31.5,
-          "Gross Amount": 157.5,
-          "Discount": 6.3
+          "Gross Amount": 157.5
         },
         {
           "Particulars": "2 Ml Syringe Dis",
           "Quantity": 5,
           "Rate": 12.0,
-          "Gross Amount": 60.0,
-          "Discount": 2.4
+          "Gross Amount": 60.0
         },
         {
           "Particulars": "2 Ml Syringe Dis",
           "Quantity": 4,
           "Rate": 12.0,
-          "Gross Amount": 48.0,
-          "Discount": 1.92
+          "Gross Amount": 48.0
         },
         {
           "Particulars": "5 Ml Syringe Dis",
           "Quantity": 5,
           "Rate": 16.5,
-          "Gross Amount": 82.5,
-          "Discount": 3.3
+          "Gross Amount": 82.5
         },
         {
           "Particulars": "Drip Set Dis Drip Set Dis",
           "Quantity": 1,
           "Rate": 201.0,
-          "Gross Amount": 201.0,
-          "Discount": 80.4
+          "Gross Amount": 201.0
         },
         {
           "Particulars": "Needle 16*1 1/2",
           "Quantity": 5,
           "Rate": 5.32,
-          "Gross Amount": 26.6,
-          "Discount": 0.0
+          "Gross Amount": 26.6
         },
         {
           "Particulars": "Needle 16*1 1/2",
           "Quantity": 4,
           "Rate": 5.32,
-          "Gross Amount": 21.28,
-          "Discount": 0.0
+          "Gross Amount": 21.28
         },
         {
           "Particulars": "Needle 24* 1/2",
           "Quantity": 4,
           "Rate": 4.0,
-          "Gross Amount": 16.0,
-          "Discount": 0.64
+          "Gross Amount": 16.0
         },
         {
           "Particulars": "Needle 26*1/2",
           "Quantity": 1,
           "Rate": 2.0,
-          "Gross Amount": 2.0,
-          "Discount": 0.11
-        },
-        {
-          "Particulars": "Std Ac Room-2-Dw8",
-          "Quantity": 3,
-          "Rate": 220.0,
-          "Gross Amount": 660.0
+          "Gross Amount": 2.0
         },
         {
           "Particulars": "Vitcee Fort",
@@ -246,12 +226,6 @@
           "Quantity": 4,
           "Rate": 31.5,
           "Gross Amount": 126.0
-        },
-        {
-          "Particulars": "2 Ml Syringe Dis",
-          "Quantity": 4,
-          "Rate": 12.0,
-          "Gross Amount": 48.0
         },
         {
           "Particulars": "Drip Set Dis",
@@ -270,12 +244,6 @@
           "Quantity": 1,
           "Rate": 191.25,
           "Gross Amount": 191.25
-        },
-        {
-          "Particulars": "Needle 16*1 1/2",
-          "Quantity": 4,
-          "Rate": 5.32,
-          "Gross Amount": 21.28
         },
         {
           "Particulars": "Abiflu 75 Cap",
@@ -302,39 +270,39 @@
       "items": [
         {
           "Particulars": "Fexolite M Tab",
-          "Quantity": 6,
-          "Price": 16.34,
-          "NetAmt": 98.04
+          "Quantity": 1,
+          "Price": 98.0,
+          "NetAmt": 98.0
         },
         {
           "Particulars": "Livi 300mg Tab",
-          "Quantity": 6,
-          "Price": 32.0,
+          "Quantity": 1,
+          "Price": 192.0,
           "NetAmt": 192.0
         },
         {
           "Particulars": "Menis - Sb Inj",
           "Quantity": 3,
-          "Price": 1031.25,
+          "Price": 3093.75,
           "NetAmt": 3093.75
         },
         {
           "Particulars": "Meronorm 1gm Inj",
           "Quantity": 2,
-          "Price": 665.62,
+          "Price": 1331.24,
           "NetAmt": 1331.24
         },
         {
           "Particulars": "Normal Saline 100ml",
           "Quantity": 2,
-          "Price": 45.22,
+          "Price": 90.44,
           "NetAmt": 90.44
         },
         {
           "Particulars": "Normal Saline 100ml",
           "Quantity": 4,
-          "Price": 45.22,
-          "NetAmt": 180.88
+          "Price": 180.0,
+          "NetAmt": 180.0
         },
         {
           "Particulars": "Normal Saline Ivf",
@@ -345,7 +313,7 @@
         {
           "Particulars": "Piximole 100 Ml",
           "Quantity": 3,
-          "Price": 299.0,
+          "Price": 897.0,
           "NetAmt": 897.0
         },
         {
@@ -357,50 +325,62 @@
         {
           "Particulars": "Ringer Lactate Ivf",
           "Quantity": 2,
-          "Price": 69.39,
+          "Price": 138.78,
           "NetAmt": 138.78
         },
         {
           "Particulars": "Bidel 100mg Inj",
           "Quantity": 2,
-          "Price": 536.91,
+          "Price": 1073.82,
           "NetAmt": 1073.82
         },
         {
           "Particulars": "Espentral - 40",
           "Quantity": 2,
-          "Price": 135.0,
+          "Price": 270.0,
           "NetAmt": 270.0
+        },
+        {
+          "Particulars": "Menis - Sb Inj",
+          "Quantity": 3,
+          "Price": 3093.74,
+          "NetAmt": 3093.74
         },
         {
           "Particulars": "Normal Saline 100ml",
           "Quantity": 3,
-          "Price": 45.22,
-          "NetAmt": 135.66
+          "Price": 135.0,
+          "NetAmt": 135.0
         },
         {
           "Particulars": "Abiflu 75 Cap",
           "Quantity": 6,
-          "Price": 46.73,
-          "NetAmt": 280.38
+          "Price": 280.4,
+          "NetAmt": 280.4
         },
         {
           "Particulars": "Doxy 1 Tab",
           "Quantity": 14,
-          "Price": 11.32,
+          "Price": 158.48,
           "NetAmt": 158.48
         },
         {
           "Particulars": "Emeset Inj 2 Ml",
           "Quantity": 2,
-          "Price": 12.72,
+          "Price": 25.44,
           "NetAmt": 25.44
         },
         {
           "Particulars": "Farotic 200",
           "Quantity": 21,
-          "Price": 112.5,
+          "Price": 2362.5,
           "NetAmt": 2362.5
+        },
+        {
+          "Particulars": "Fexolite M Tab",
+          "Quantity": 6,
+          "Price": 16.34,
+          "NetAmt": 98.04
         },
         {
           "Particulars": "Fexolite M Tab",

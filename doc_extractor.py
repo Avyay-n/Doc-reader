@@ -410,9 +410,20 @@ def _call_ollama(messages: list, label: str) -> Optional[str]:
             prompt_text = "\n\n".join(m["content"] for m in messages)
             payload = _json.dumps({"contents": [{"parts": [{"text": prompt_text}]}], "generationConfig": {"responseMimeType": "application/json"}}).encode("utf-8")
             req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req) as resp:
-                res_data = _json.loads(resp.read().decode("utf-8"))
-                return res_data["candidates"][0]["content"]["parts"][0]["text"]
+            import time as _time
+            for _attempt in range(5):
+                try:
+                    with urllib.request.urlopen(req) as resp:
+                        res_data = _json.loads(resp.read().decode("utf-8"))
+                        reply_text = res_data["candidates"][0]["content"]["parts"][0]["text"]
+                        _time.sleep(4.2)
+                        return reply_text
+                except urllib.error.HTTPError as he:
+                    if he.code == 429:
+                        log.warning("  [GEMINI] Rate limit (429) hit. Pausing 15s to clear window...")
+                        _time.sleep(15)
+                    else:
+                        raise he
         elif AI_ENGINE == "openai":
             log.info("  [LLM] Calling OpenAI Cloud API (%s)…", label)
             import urllib.request, json as _json, os
