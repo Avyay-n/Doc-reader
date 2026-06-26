@@ -1,54 +1,34 @@
 {
   "document_name": "doc3.pdf",
   "total_pages": 8,
-  "total_items": 85,
+  "total_items": 84,
   "pages": [
     {
       "page_number": 1,
       "items": [
         {
-          "Particulars": "BED CHARGES",
-          "Price": 11000.0
+          "Particulars": "BED CHARGES"
         },
         {
-          "Particulars": "PATHOLOGY INVESTIGATION",
-          "Price": 2260.0
+          "Particulars": "PATHOLOGY INVESTIGATION"
         },
         {
-          "Particulars": "DOCTOR FEES",
-          "Price": 6800.0
+          "Particulars": "DOCTOR FEES"
         },
         {
-          "Particulars": "PROCEDURES",
-          "Price": 1980.0
+          "Particulars": "PROCEDURES"
         },
         {
-          "Particulars": "OTHER CHARGES",
-          "Price": 200.0
+          "Particulars": "OTHER CHARGES"
         },
         {
-          "Particulars": "DRUGS AND CONSUMABLES",
-          "Price": 90540.95
+          "Particulars": "DRUGS AND CONSUMABLES"
         },
         {
-          "Particulars": "PHARMACY BILL",
-          "Price": 14170.71
+          "Particulars": "PHARMACY BILL"
         },
         {
-          "Particulars": "PHARMACY SALES RETURN",
-          "Price": -3585.94
-        },
-        {
-          "Particulars": "Pharmacy Bill",
-          "Price": 1000.0
-        },
-        {
-          "Particulars": "CGST",
-          "Price": 12336.72
-        },
-        {
-          "Particulars": "SGST",
-          "Price": 12336.72
+          "Particulars": "PHARMACY SALES RETURN"
         }
       ]
     },
@@ -56,17 +36,17 @@
       "page_number": 2,
       "items": [
         {
-          "Particulars": "BED CHARGES BEDCHARGE: PRIVATE NON AC/Z B/711",
-          "Quantity": 1.0,
+          "Particulars": "BEDCHARGE: PRIVATE NON AC/Z B/711",
+          "Quantity": 2.0,
           "Price": 7000.0
         },
         {
-          "Particulars": "BED CHARGES BEDCHARGE: SEMI PRIVATE NON AC/7 B/719 SEMIPrivate Non Ac",
+          "Particulars": "BEDCHARGE: SEMI PRIVATE NON AC/7 B/719 SEMI PRIVATE NON AC",
           "Quantity": 1.0,
           "Price": 2000.0
         },
         {
-          "Particulars": "PATHOLOGY INVESTIGATION :- BLOOD GASES",
+          "Particulars": "BLOOD GASES",
           "Quantity": 1.0,
           "Price": 300.0
         },
@@ -81,12 +61,12 @@
           "Price": 700.0
         },
         {
-          "Particulars": "DOCTOR FEES :- ROUTINE VISIT 2 l - 1ST VISIT - Dr. GADHIKAR HARSHAL ROUTINE VISIT 2 l - SUBSEaUENT - Dr. GADHIKAR HARSHAL",
+          "Particulars": "ROUTINE VISIT 2 l - 1ST VISIT - Dr. GADHIKAR HARSHAL ROUTINE VISIT 2 l - SUBSEaUENT - Dr. GADHIKAR HARSHAL",
           "Quantity": 1.0,
           "Price": 600.0
         },
         {
-          "Particulars": "PROCEDURES:. BSL ON GLUCOMETER",
+          "Particulars": "BSL ON GLUCOMETER",
           "Quantity": 1.0,
           "Price": 130.0
         },
@@ -107,64 +87,63 @@
         },
         {
           "Particulars": "INTRACATH INSERTION",
-          "Quantity": 1,
-          "Price": 1980.0
+          "Quantity": 1.0,
+          "Price": 100.0
         },
         {
           "Particulars": "OTHER CHARGES;- BIOMEDICAL WASTE DISPOSAL ERYOPD",
-          "Quantity": 1
+          "Quantity": 1.0,
+          "Price": 50.0
         },
         {
           "Particulars": "BIOMEDICAL WASTE DISPOSAL WARDS",
-          "Quantity": 1,
-          "Price": 200000.0
+          "Quantity": 1.0,
+          "Price": 150.0
         },
         {
           "Particulars": "DRUGS AwD CONSUMABLES :- PHARMACY DRUGS",
-          "Quantity": 1,
+          "Quantity": 1.0,
           "Price": 90540.95
         },
         {
           "Particulars": "Bill :11842627/52655",
-          "Quantity": 1
+          "Quantity": 1.0,
+          "Price": 1535.73
         },
         {
           "Particulars": "Bill:11842627152785",
-          "Quantity": 1
+          "Quantity": 1.0,
+          "Price": 66.56
         },
         {
           "Particulars": "Bill :12072627155926",
-          "Quantity": 1
+          "Quantity": 1.0,
+          "Price": 32.24
         },
         {
           "Particulars": "Bill :10752627/59582",
-          "Quantity": 1
+          "Quantity": 1.0,
+          "Price": 84.41
         },
         {
           "Particulars": "Bill:11842627153272",
-          "Quantity": 1
+          "Quantity": 1.0,
+          "Price": 1722.0
         },
         {
           "Particulars": "Bill :11842627153306",
-          "Quantity": 1
+          "Quantity": 1.0,
+          "Price": 3608.2
         },
         {
           "Particulars": "Bill :1 1842627/53353 Bill :11842627/53370",
-          "Quantity": 1
+          "Quantity": 1.0,
+          "Price": 66.77
         },
         {
           "Particulars": "Bill :11842627/53513",
-          "Quantity": 1
-        },
-        {
-          "Particulars": "BED CHARGES",
           "Quantity": 1.0,
-          "Price": 1000.0
-        },
-        {
-          "Particulars": "PHARMACY BILL",
-          "Quantity": 1.0,
-          "Price": 1000.0
+          "Price": 286.39
         }
       ]
     },
@@ -173,38 +152,43 @@
       "items": [
         {
           "Particulars": "Bill:11842627153881",
-          "Quantity": 1,
+          "Quantity": 1.0,
           "Price": 400.0
         },
         {
           "Particulars": "Bill:11842627154031",
-          "Quantity": 1,
+          "Quantity": 1.0,
           "Price": 1148.0
         },
         {
           "Particulars": "Bill:11842627154078",
-          "Quantity": 1,
+          "Quantity": 1.0,
           "Price": 44.92
         },
         {
           "Particulars": "Bill:11842627154172",
-          "Quantity": 1,
+          "Quantity": 1.0,
           "Price": 1322.0
         },
         {
           "Particulars": "Bill:11842627154587",
-          "Quantity": 1,
+          "Quantity": 1.0,
           "Price": 71.75
         },
         {
           "Particulars": "Bill :11842627/54609",
-          "Quantity": 1,
+          "Quantity": 1.0,
           "Price": 1722.0
         },
         {
-          "Particulars": "PHARMACY BILL Department : Bill:1082262717990",
-          "Quantity": 1,
+          "Particulars": "Bill:1082262717990",
+          "Quantity": 1.0,
           "Price": 1992.97
+        },
+        {
+          "Particulars": "PHARMACY SALES RETURN",
+          "Quantity": 1.0,
+          "Price": -3585.94
         }
       ]
     },
@@ -212,154 +196,179 @@
       "page_number": 4,
       "items": [
         {
-          "Particulars": "REVELOL AM 5O/5TAB JKN0'125006AS",
+          "Particulars": "AL-01-4433 REVELOL AM 5O/5TAB",
+          "Quantity": 5.0,
+          "Price": 0.41
+        },
+        {
+          "Particulars": "Single ltem Pharmacy Retail",
           "Quantity": 1,
           "Price": 84.41
         },
         {
-          "Particulars": "EXTENSION TUBE lOCM WTH 5LO8S",
-          "Quantity": 1,
+          "Particulars": "SR.O2-01'16 EXTENSION TUBE lOCM WTH 5LO8S 3WAY",
+          "Quantity": 1.0,
           "Price": 280.0
         },
         {
-          "Particulars": "VENFLON SAFETY 2OG-393244",
-          "Quantity": 2,
+          "Particulars": "SR-02-2020 VENFLON SAFETY 2OG-393244",
+          "Quantity": 2.0,
           "Price": 460.01
         },
         {
-          "Particulars": "ASPIRATOR SYR 1.sIuL zKo1 o2t022028",
-          "Quantity": 1,
+          "Particulars": "SR-03-0,149 S 95 A 6 F - E 62 P 2 ICO ASPIRATOR SYR 1.sIuL",
+          "Quantity": 1.0,
           "Price": 45.0
         },
         {
-          "Particulars": "GLOVES EXAM. MEXISAFEM 003",
-          "Quantity": 2,
+          "Particulars": "sR-06-2151 GLOVES EXAM. MEXISAFEM",
+          "Quantity": 2.0,
           "Price": 14.0
         },
         {
-          "Particulars": "NS FLEXIDRIP IV 1OOML OTSUKA",
-          "Quantity": 1,
+          "Particulars": "A1.03.0463 NS FLEXIDRIP IV 1OOML OTSUKA",
+          "Quantity": 1.0,
           "Price": 44.92
         },
         {
-          "Particulars": "HOSPIMOL UB IV lOOOMG/1OOML",
-          "Quantity": 1,
-          "Price": 10.0
+          "Particulars": "41.03.0415 HOSPIMOL UB IV lOOOMG/1OOML",
+          "Quantity": 1.0,
+          "Price": 110.0
         },
         {
-          "Particulars": "PANTOCIDIV4OMG NPC00048",
-          "Quantity": 1,
+          "Particulars": "AL.O3.OO54 PANTOCIDIV4OMG",
+          "Quantity": 1.0,
           "Price": 53.89
         },
         {
-          "Particulars": "5CCSYR OMNIVAN24X 1 25L13M4202",
-          "Quantity": 1,
+          "Particulars": "sR-03-0075 5CCSYR OMNIVAN24X",
+          "Quantity": 1.0,
           "Price": 11.0
         },
         {
-          "Particulars": "I V SET ROfuISON TRANSFLOW.",
-          "Quantity": 1,
+          "Particulars": "SR.03.0148 I V SET ROfuISON TRANSFLOW.",
+          "Quantity": 1.0,
           "Price": 80.0
         },
         {
-          "Particulars": "VELFIX-EDGE 7X9CM",
-          "Quantity": 1,
+          "Particulars": "SR-01-0673 VELFIX-EDGE 7X9CM",
+          "Quantity": 1.0,
           "Price": 213.0
         },
         {
-          "Particulars": "0-SYTE BD-385103",
-          "Quantity": 2,
+          "Particulars": "sR-06-2953 0-SYTE BD-385103",
+          "Quantity": 2.0,
           "Price": 412.0
         },
         {
-          "Particulars": "REVELOL AM 5O/5TAB JKN0'125006AS",
-          "Quantity": 1,
-          "Price": 9.52
+          "Particulars": "REVELOL AM 5O/5TAB",
+          "Quantity": 5.0,
+          "Price": 0.41
         },
         {
           "Particulars": "PROBE COVER FOR THERMOSCAN",
-          "Quantity": 1,
+          "Quantity": 1.0,
+          "Price": 0.62
+        },
+        {
+          "Particulars": null,
+          "Quantity": 0.0,
+          "Price": 6.5
+        },
+        {
+          "Particulars": "PROBE COVER FOR THERMOSCAN",
+          "Quantity": 1.0,
           "Price": 9.52
         },
         {
-          "Particulars": "PAUSE INJ SOOI/lG/sML EM260'192",
-          "Quantity": 2,
+          "Particulars": "PAUSE INJ SOOI/lG/sML",
+          "Quantity": 2.0,
           "Price": 147.38
         },
         {
-          "Particulars": "ONDEM INJ 4I'G/2ML SGOND26O79",
-          "Quantity": 1,
+          "Particulars": "ONDEM INJ 4I'G/2ML",
+          "Quantity": 1.0,
           "Price": 12.73
         },
         {
           "Particulars": "lOCC SYR OMNIVAN 21 X 1.5",
-          "Quantity": 1,
+          "Quantity": 1.0,
           "Price": 18.5
         },
         {
           "Particulars": "2CC SYR OMNIVAN 24 X 1",
-          "Quantity": 1,
+          "Quantity": 1.0,
           "Price": 9.5
         },
         {
           "Particulars": "POLYFLUSH SYRINGE lOML",
-          "Quantity": 1,
+          "Quantity": 1.0,
           "Price": 55.5
         },
         {
           "Particulars": "POLYFLUSH SYRINGE lOML",
-          "Quantity": 7,
+          "Quantity": 7.0,
           "Price": 388.5
         },
         {
-          "Particulars": "lOCC SYR OMNIVAN 21 X 1.5",
-          "Quantity": 5,
+          "Particulars": "lOCC SYR OIVNIVAN 21 X 1.5",
+          "Quantity": 5.0,
           "Price": 92.51
         },
         {
-          "Particulars": "REVELOL AM 50/5TAB JKN0'125006AS",
-          "Quantity": 1,
-          "Price": 28.5
+          "Particulars": "5CC SYR OMNIVAN 24 X 1",
+          "Quantity": 3.0,
+          "Price": 11.0
+        },
+        {
+          "Particulars": "ECOFLAC PLUS NS O.9GM/'IOOML",
+          "Quantity": 4.0,
+          "Price": 180.0
+        },
+        {
+          "Particulars": "ALCOHOL SWAB ROMSON",
+          "Quantity": 7.0,
+          "Price": 19.25
+        },
+        {
+          "Particulars": "REVELOL AM 5O/5TAB",
+          "Quantity": 5.0,
+          "Price": 0.41
         },
         {
           "Particulars": "2CC SYR OMNIVAN 24 X 1",
-          "Quantity": 3,
-          "Price": 85.5
+          "Quantity": 3.0,
+          "Price": 28.5
         },
         {
-          "Particulars": "THALIX CAPS sOMG THA25O914",
-          "Quantity": 2,
-          "Price": 133.12
+          "Particulars": "THALIX CAPS sOMG",
+          "Quantity": 2.0,
+          "Price": 66.56
         },
         {
-          "Particulars": "OCTRIDE INJ 100MCG/ML GTH0115A O1|12DO2A",
-          "Quantity": 3,
-          "Price": 4950.0
+          "Particulars": "OCTRIDE INJ 100MCG/|ML",
+          "Quantity": 3.0,
+          "Price": 1650.0
         },
         {
-          "Particulars": "IMLSYRTUBERCUIlN 6064263",
-          "Quantity": 72.0,
-          "Price": 123984.0
+          "Particulars": "IMLSYRTUBERCUIlN",
+          "Quantity": 1,
+          "Price": 72.0
         },
         {
-          "Particulars": "IRNY INJ 1000MG/20M1 G250545",
+          "Particulars": "IRNY INJ 1000MG/20M1",
           "Quantity": 1,
           "Price": 3608.2
         },
         {
-          "Particulars": "STERIPORT TOTAL NS IV 60650233",
-          "Quantity": 1,
-          "Price": 66.77
-        },
-        {
-          "Particulars": "STERIPORTTOTAL NS IV 60660233",
-          "Quantity": 1,
+          "Particulars": "STERIPORTTOTAL NS IV 2 25GM/25OML AMANTA",
+          "Quantity": 1.0,
           "Price": 6.77
         },
         {
-          "Particulars": "lML SYR TUBERCULIN 6064263",
-          "Quantity": 5,
-          "Price": 600.0
+          "Particulars": "lML SYR TUBERCULIN",
+          "Quantity": 5.0,
+          "Price": 24.0
         }
       ]
     },
@@ -367,64 +376,59 @@
       "page_number": 5,
       "items": [
         {
-          "Particulars": "THALIX CAPS SOMG TH4250914",
-          "Quantity": 1,
+          "Particulars": "THALIX CAPS SOMG",
+          "Quantity": 5.0,
           "Price": 166.39
         },
         {
-          "Particulars": "TEGADERM 1633 lN7X8.5 R03260914",
-          "Quantity": 1,
+          "Particulars": "TEGADERM 1633 lN7X8.5",
+          "Quantity": 1.0,
           "Price": 220.0
         },
         {
-          "Particulars": "VASOFIX SAFETY 22G 25M10G8A0'1",
-          "Quantity": 1,
+          "Particulars": "VASOFIX SAFETY 22G",
+          "Quantity": 1.0,
           "Price": 180.0
         },
         {
-          "Particulars": "IMLSYRTUBERCUL|N 6064263",
-          "Quantity": 2,
-          "Price": 96.0
+          "Particulars": "IMLSYRTUBERCUL|N",
+          "Quantity": 2.0,
+          "Price": 48.0
         },
         {
-          "Particulars": "OCTRIDE INJ 100MCG/1ML GTH0115A",
-          "Quantity": 2,
+          "Particulars": "OCTRIDE INJ 100MCG/1ML",
+          "Quantity": 2.0,
           "Price": 1100.0
         },
         {
-          "Particulars": "NS FLEXTDRTP lV I00MLOTSUKq",
-          "Quantity": 1,
-          "Price": 44.52
-        },
-        {
-          "Particulars": "OCTRIDEINJ'|ooMCG/|ML GTH0115A",
-          "Quantity": 4,
-          "Price": 2200.0
+          "Particulars": "OCTRIDEINJ'|ooMCG/|ML",
+          "Quantity": 2.0,
+          "Price": 550.0
         },
         {
           "Particulars": "POLYFLUSH SYRINGE 10ML",
-          "Quantity": 4,
-          "Price": 88.0
+          "Quantity": 4.0,
+          "Price": 222.0
         },
         {
-          "Particulars": "MBLET TAB 2OMG U802884",
-          "Quantity": 5,
-          "Price": 358.75
+          "Particulars": "MBLET TAB 2OMG",
+          "Quantity": 5.0,
+          "Price": 71.75
         },
         {
-          "Particulars": "TMLSYRTUBERCULTN 6064263",
-          "Quantity": 3,
-          "Price": 216.0
+          "Particulars": "'TMLSYRTUBERCULTN",
+          "Quantity": 3.0,
+          "Price": 72.0
         },
         {
-          "Particulars": "OCTRIDEINJ Io0MCG/1ML GTH0115A",
-          "Quantity": 3,
+          "Particulars": "OCTRIDEINJ Io0MCG/1ML",
+          "Quantity": 3.0,
           "Price": 4950.0
         },
         {
-          "Particulars": "REVELOLAM 5O/5TAB JKN014008AS",
-          "Quantity": 2,
-          "Price": 64.48
+          "Particulars": "REVELOLAM 5O/5TAB",
+          "Quantity": 2.0,
+          "Price": 32.24
         }
       ]
     },
@@ -438,13 +442,7 @@
     },
     {
       "page_number": 8,
-      "items": [
-        {
-          "Particulars": "Inj Octreotide lOOmcg 1-0-l for 15 days then stop",
-          "Quantity": 1.0,
-          "Price": 500.0
-        }
-      ]
+      "items": []
     }
   ]
 }

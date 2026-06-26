@@ -406,7 +406,7 @@ def _call_ollama(messages: list, label: str) -> Optional[str]:
             if not api_key:
                 log.error("  [GEMINI] GEMINI_API_KEY environment variable not set!")
                 return None
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
             prompt_text = "\n\n".join(m["content"] for m in messages)
             payload = _json.dumps({"contents": [{"parts": [{"text": prompt_text}]}], "generationConfig": {"responseMimeType": "application/json"}}).encode("utf-8")
             req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
@@ -1089,6 +1089,7 @@ if __name__ == "__main__":
 
     OLLAMA_MODEL = args.model
     OUTPUT_DIR   = args.output_dir
+    AI_ENGINE    = args.engine
 
     if args.watch:
         import time
