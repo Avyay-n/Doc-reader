@@ -1043,8 +1043,8 @@ def process_file(file_path: Path) -> None:
     csv_path = OUTPUT_DIR / (file_path.stem + ".csv")
     save_csv(result, csv_path)
 
-    xlsx_path = OUTPUT_DIR / (file_path.stem + ".xlsx")
-    save_excel(result, xlsx_path)
+    # xlsx_path = OUTPUT_DIR / (file_path.stem + ".xlsx")
+    # save_excel(result, xlsx_path)
 
     master_xlsx = OUTPUT_DIR / "Master_Hospital_Billing.xlsx"
     append_to_master_excel(result, master_xlsx)
