@@ -42,14 +42,37 @@ except ImportError:
     fitz = None  # type: ignore
 
 try:
-    import easyocr
     import numpy as np
-    # Initialize EasyOCR globally to avoid reloading model per page
-    ocr_engine = easyocr.Reader(['en'])
 except ImportError:
-    easyocr = None  # type: ignore
-    np = None  # type: ignore
-    ocr_engine = None
+    np = None
+
+_paddle_ocr_engine = None
+_paddle_ocr_initialized = False
+
+def get_paddle_ocr():
+    global _paddle_ocr_engine, _paddle_ocr_initialized
+    if not _paddle_ocr_initialized:
+        _paddle_ocr_initialized = True
+        try:
+            from paddleocr import PaddleOCR
+            _paddle_ocr_engine = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
+        except Exception:
+            _paddle_ocr_engine = None
+    return _paddle_ocr_engine
+
+_easyocr_engine = None
+_easyocr_initialized = False
+
+def get_easy_ocr():
+    global _easyocr_engine, _easyocr_initialized
+    if not _easyocr_initialized:
+        _easyocr_initialized = True
+        try:
+            import easyocr
+            _easyocr_engine = easyocr.Reader(['en'])
+        except Exception:
+            _easyocr_engine = None
+    return _easyocr_engine
 
 try:
     import docx  # python-docx
@@ -67,8 +90,10 @@ except ImportError:
 OUTPUT_DIR  = Path("output_docs")
 
 # Change to whichever model you have pulled locally.
-OLLAMA_MODEL = "llama3.1"
-AI_ENGINE    = "ollama"
+OLLAMA_MODEL    = "llama3.1"
+AI_ENGINE       = "ollama"
+FALLBACK_ENGINE = "ollama"
+MAX_WORKERS     = 1
 
 SUPPORTED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".txt", ".docx"}
 
@@ -171,48 +196,101 @@ def extract_text_from_pdf(file_path: Path) -> list[str]:
         except Exception as exc:
             log.warning("  [PDF] PyPDF2 also failed: %s", exc)
 
-    if fitz is not None and ocr_engine is not None and np is not None:
-        log.info("  [PDF] Text layer missing or very small, falling back to EasyOCR...")
-        try:
-            doc = fitz.open(file_path)
-            pages_text = []
-            for page in doc:
-                pix = page.get_pixmap(dpi=400)
-                # Convert PyMuPDF pixmap to numpy array
-                img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
-                if pix.n == 4:
-                    img_array = img_array[:, :, :3] # Convert RGBA to RGB
-                
-                result = ocr_engine.readtext(img_array)
-                
-                if result:
-                    page_text = format_ocr_result(result)
-                    pages_text.append(page_text)
-                else:
-                    pages_text.append("")
+    if fitz is not None and np is not None:
+        p_engine = get_paddle_ocr()
+        if p_engine is not None:
+            log.info("  [PDF] Text layer missing or very small, falling back to PaddleOCR...")
+            try:
+                doc = fitz.open(file_path)
+                pages_text = []
+                for page in doc:
+                    pix = page.get_pixmap(dpi=400)
+                    # Convert PyMuPDF pixmap to numpy array
+                    img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+                    if pix.n == 4:
+                        img_array = img_array[:, :, :3] # Convert RGBA to RGB
                     
-            if any(pages_text):
-                return pages_text
-        except Exception as exc:
-            log.warning("  [PDF] PyMuPDF OCR fallback failed: %s", exc)
+                    result = p_engine.ocr(img_array, cls=True)
+                    
+                    if result and result[0]:
+                        ocr_data = []
+                        for line in result[0]:
+                            bbox = line[0]
+                            text = line[1][0]
+                            prob = line[1][1]
+                            ocr_data.append((bbox, text, prob))
+                        page_text = format_ocr_result(ocr_data)
+                        pages_text.append(page_text)
+                    else:
+                        pages_text.append("")
+                        
+                if any(pages_text):
+                    return pages_text
+            except Exception as exc:
+                log.warning("  [PDF] PyMuPDF PaddleOCR fallback failed: %s — trying EasyOCR", exc)
 
-    log.error("  [PDF] Could not extract text from %s", file_path.name)
+        e_engine = get_easy_ocr()
+        if e_engine is not None:
+            log.info("  [PDF] Text layer missing or very small, falling back to EasyOCR...")
+            try:
+                doc = fitz.open(file_path)
+                pages_text = []
+                for page in doc:
+                    pix = page.get_pixmap(dpi=400)
+                    # Convert PyMuPDF pixmap to numpy array
+                    img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+                    if pix.n == 4:
+                        img_array = img_array[:, :, :3] # Convert RGBA to RGB
+                    
+                    result = e_engine.readtext(img_array)
+                    
+                    if result:
+                        page_text = format_ocr_result(result)
+                        pages_text.append(page_text)
+                    else:
+                        pages_text.append("")
+                        
+                if any(pages_text):
+                    return pages_text
+            except Exception as exc:
+                log.warning("  [PDF] PyMuPDF EasyOCR fallback failed: %s", exc)
+
+    log.error("  [PDF] Could not extract text from %s (or no OCR engine is available)", file_path.name)
     return []
 
 def extract_text_from_image(file_path: Path) -> list[str]:
-    """Extract text from an image using EasyOCR (returns as 1 page)."""
-    if ocr_engine is None:
-        log.error("  [IMG] easyocr not installed.")
-        return []
-    try:
-        result = ocr_engine.readtext(str(file_path))
-        if result:
-            text = format_ocr_result(result)
-            return [text]
-        return [""]
-    except Exception as exc:
-        log.error("  [IMG] OCR failed for %s: %s", file_path.name, exc)
-        return []
+    """Extract text from an image using PaddleOCR (preferred) or EasyOCR (fallback)."""
+    p_engine = get_paddle_ocr()
+    if p_engine is not None:
+        try:
+            result = p_engine.ocr(str(file_path), cls=True)
+            if result and result[0]:
+                ocr_data = []
+                for line in result[0]:
+                    bbox = line[0]
+                    text = line[1][0]
+                    prob = line[1][1]
+                    ocr_data.append((bbox, text, prob))
+                page_text = format_ocr_result(ocr_data)
+                return [page_text]
+            return [""]
+        except Exception as exc:
+            log.warning("  [IMG] PaddleOCR failed for %s: %s — trying EasyOCR", file_path.name, exc)
+
+    e_engine = get_easy_ocr()
+    if e_engine is not None:
+        try:
+            result = e_engine.readtext(str(file_path))
+            if result:
+                text = format_ocr_result(result)
+                return [text]
+            return [""]
+        except Exception as exc:
+            log.error("  [IMG] EasyOCR failed for %s: %s", file_path.name, exc)
+            return []
+            
+    log.error("  [IMG] No OCR engine is available (PaddleOCR and EasyOCR are both missing).")
+    return []
 
 def extract_text_from_txt(file_path: Path) -> list[str]:
     try:
@@ -264,8 +342,6 @@ def extract_text(file_path: Path) -> list[str]:
             p = re.sub(r'\b(\d+)\.[oO]{2}\b', r'\1.00', p)
             # Fix OCR misread L000 or l000 for 1.000
             p = re.sub(r'\b[Ll]000\b', '1.000', p)
-            # Fix common dot-matrix OCR errors where .00 is misread as .06, .60, etc.
-            p = re.sub(r'\.(06|08|60|80|90|09|86|68|66|88)\b', '.00', p)
             # Fix missing decimal point for perfectly whole numbers ending in space+00 (like 120 00)
             p = re.sub(r'\b(\d+)\s+00\b', r'\1.00', p)
             # Separate table headers merged with first row on same line
@@ -274,9 +350,6 @@ def extract_text(file_path: Path) -> list[str]:
             p = re.sub(r'^.*?(?:Company|MRD No|Patient Name|Visit Code|Vlslt|Patlent|Age, Sex)[^\n]*$', '', p, flags=re.IGNORECASE | re.MULTILINE)
             # Strip patient metadata prefixes up to item code
             p = re.sub(r'^(?:.*?(?:Company|MRD No|Patient Name|Visit Code|Vlslt|Patlent)[^\n]*?)(?=\b[A-Z]{2}-\d{2}-\d{4}\b)', '', p, flags=re.IGNORECASE | re.MULTILINE)
-            # Restore PHARMACY BILL row if obscured by handwriting on summary page
-            if "DRUGS AND CONSUMABLES" in p and "PHARMACY BILL" not in p and "PHARMACY SALES RETURN" in p:
-                p = p.replace("PHARMACY SALES RETURN", "PHARMACY BILL  14170.71\nPHARMACY SALES RETURN")
             # Clean blue ink handwriting OCR noise on summary lines
             p = re.sub(r'[\{\}\(\)\!]+|\b(?:CCH|sl|o)\b', '', p)
             p = re.sub(r'\b[T]\b\s+(?=OTHER CHARGES)', '', p)
@@ -286,16 +359,6 @@ def extract_text(file_path: Path) -> list[str]:
             p = re.sub(r'(\d+\.\d{2})\s+(?=[A-Z][A-Z\s]+(?:\b\d|\b[A-Z]{2,}))', r'\1\n', p)
             # Clean up stray trailing page numbers/digits after prices at line ends
             p = re.sub(r'(\.\d{2})\s+\d+\s*$', r'\1', p, flags=re.MULTILINE)
-            # Remove specific OCR artifacts and garbage
-            p = re.sub(r'(?i)Pharm\s*Room\s*Serv[il]ce[_\w\s!|:]*', '', p)
-            p = re.sub(r'(?i)Deenanath\s*M.*?[rR]ch', '', p)
-            
-            # Fix OCR misreads for pharmacy bills on breakdown pages
-            p = p.replace("--ein 1T8a26nt526SS", "Bill :11842627/52655")
-            p = p.replace("Bil 1A752627159582", "Bill :10752627/59582")
-            p = p.replace("Bitl:118426271535'13", "Bill :11842627/53513")
-            if "1842627/53353" in p and "53370" not in p:
-                p = p.replace("1842627/53353                                         1.0        66.77", "1842627/53353                                         1.0        66.77\n   Bill :11842627/53370                                          1.0        66.77")
             
             # Smartly merge split line items (e.g. medical devices split across two lines)
             # If the current line has a price at the end, but the PREVIOUS line has NO price, merge them.
@@ -303,13 +366,10 @@ def extract_text(file_path: Path) -> list[str]:
             merged_lines = []
             for line in lines:
                 if not line.strip(): continue
-                # Does the current line end with a price? (e.g. 120.00 or 120)
-                # We use a broad check for numbers at the end of the line.
                 line_has_price = bool(re.search(r'\d+(?:\.\d{2})?\s*$', line.strip()))
                 
                 if merged_lines:
                     prev_has_price = bool(re.search(r'\d+(?:\.\d{2})?\s*$', merged_lines[-1].strip()))
-                    # If prev line has NO price, and current line HAS a price, merge them!
                     if not prev_has_price and line_has_price:
                         merged_lines[-1] = merged_lines[-1].strip() + " " + line.strip()
                         continue
@@ -333,31 +393,40 @@ Do NOT describe the document. Do NOT use markdown. Output ONLY the JSON object.
 """
 
 USER_PROMPT_TEMPLATE = """\
-Extract every single line item from the invoice/receipt text below.
-Identify the exact data columns present for the line items on this specific page (e.g. "Particulars", "Quantity", "Amount", "Charges").
-Use those exact column names as your JSON keys.
-If a page truly has no table headers, infer simple generic keys from the data. The primary item description/name MUST ALWAYS use the key "Particulars". If a number represents a count (like days, visits, or units), you MUST use the key "Quantity". Do not use "Rate" for counts.
+Extract every single financial/billing line item from the invoice/receipt text below.
 
-OUTPUT FORMAT — respond with ONLY this JSON, nothing else:
+For each line item, extract the data and map it to the following standardized JSON keys:
+- "Particulars": The primary item description, name, or service details.
+- "Quantity": The number of units, quantity, count, or visits. If not specified, use 1.
+- "Price": The unit price, rate, or charge per item.
+- "NetAmt": The net amount, total charges, or row total for this item.
+
+CRITICAL COLUMN ALIGNMENT RULE:
+Identify the headers of the table columns in the text:
+1. If the table columns are: [Sl# Description Date Qty Rate Gross Amount Discount]
+   - Map "Quantity" to Qty (e.g. 5, 4, 1, etc.).
+   - Map "Price" to Rate (e.g. 12.00, 201.00, etc.).
+   - Map "NetAmt" to Gross Amount (e.g. 60.00, 201.00, etc.). Do NOT map NetAmt to the Discount column!
+2. If the table columns are: [Sl# Particulars Qty Price Amount]
+   - Map "Quantity" to Qty.
+   - Map "Price" to Price.
+   - Map "NetAmt" to Amount.
+3. Verify that for every extracted item: Price * Quantity is mathematically close to NetAmt. If not, check if you misaligned the columns!
+
+OUTPUT FORMAT — respond with ONLY this JSON structure, nothing else:
 {{
   "page_number": {page_num},
   "items": [
-    {{"Particulars": "Line 1 Name [CODE123] Line 2 Name", "Quantity": 1, "Price": 2140.0, "NetAmt": 2140.0}},
-    {{"Particulars": "Another Item", "Quantity": 2, "Price": 150.0, "NetAmt": 300.0}}
+    {{"Particulars": "Item Description", "Quantity": 1.0, "Price": 150.0, "NetAmt": 150.0}},
+    {{"Particulars": "Another Item", "Quantity": 2.0, "Price": 100.0, "NetAmt": 200.0}}
   ]
 }}
 
 RULES:
 - Only extract FINANCIAL billing line items. If a page or a list contains NO financial prices (e.g. a medical report, clinical notes, patient details), IGNORE IT completely and return an empty list for "items".
-- CRITICAL: The item's description or name must ALWAYS be stored as the VALUE under the key "Particulars".
-- CRITICAL: Extract EVERY SINGLE financial row. Do not summarize, group, or skip ANY rows. 
-- CRITICAL: If an item is missing a value (like Quantity), output `null` or 1 for that key. DO NOT drop the item!
-- CRITICAL: Do NOT drop "SGST" lines! If you see an SGST tax line below a CGST tax line with the exact same price, you MUST extract BOTH of them as separate items. They are not duplicates!
 - Do NOT extract patient metadata (Name, Age, Sex, Address, Dates, etc.) as line items.
-- CRITICAL: Do NOT extract standalone section titles (e.g., "BILL DETAILS", "Pharma Issue Visit Wise") if they have no price. However, if a row lists an item description and a monetary amount/charge (such as summary rows on Bill Of Supply: "BED CHARGES", "PATHOLOGY INVESTIGATION", "DOCTOR FEES", "PROCEDURES", "OTHER CHARGES", "DRUGS AND CONSUMABLES", "PHARMACY BILL"), you MUST extract them!
+- Extract the complete item description exactly as it appears. Do not truncate.
 - All numeric fields must be plain numbers (no $ signs, no commas).
-- DO NOT abbreviate item names. CRITICAL: Do NOT truncate item names at commas or hyphens. Extract the ENTIRE description exactly as it appears.
-- Do NOT include any dummy or example data in your output. If the page contains no financial items, return an empty list for "items".
 {ocr_instructions}
 
 DO NOT write any sentence or paragraph. START your response with the {{ character.
@@ -374,7 +443,7 @@ Respond with ONLY a JSON object. Start immediately with {{ and end with }}.
 No explanation. No markdown. No prose. Only JSON.
 
 Schema:
-{{"page_number": {page_num}, "items": [{{"Dynamic Key 1": "...", "Dynamic Key 2": 0.0}}]}}
+{{"page_number": {page_num}, "items": [{{"Particulars": "...", "Quantity": 1.0, "Price": 0.0, "NetAmt": 0.0}}]}}
 
 Invoice text:
 {raw_text}
@@ -398,17 +467,45 @@ def clean_json_response(raw: str) -> str:
 
 
 def _call_ollama(messages: list, label: str) -> Optional[str]:
+    # Schema definition for strict JSON output enforcement
+    schema_def = {
+        "type": "OBJECT",
+        "properties": {
+            "page_number": {"type": "INTEGER"},
+            "items": {
+                "type": "ARRAY",
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "Particulars": {"type": "STRING"},
+                        "Quantity": {"type": "NUMBER"},
+                        "Price": {"type": "NUMBER"},
+                        "NetAmt": {"type": "NUMBER"}
+                    },
+                    "required": ["Particulars", "Quantity", "Price", "NetAmt"]
+                }
+            }
+        },
+        "required": ["page_number", "items"]
+    }
+
     try:
         if AI_ENGINE == "gemini":
             log.info("  [LLM] Calling Gemini Cloud API (%s)…", label)
             import urllib.request, json as _json, os
             api_key = os.environ.get("GEMINI_API_KEY", "")
             if not api_key:
-                log.error("  [GEMINI] GEMINI_API_KEY environment variable not set!")
-                return None
+                log.warning("  [GEMINI] GEMINI_API_KEY environment variable not set! Falling back to %s...", FALLBACK_ENGINE)
+                return _call_fallback(messages, label)
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
             prompt_text = "\n\n".join(m["content"] for m in messages)
-            payload = _json.dumps({"contents": [{"parts": [{"text": prompt_text}]}], "generationConfig": {"responseMimeType": "application/json"}}).encode("utf-8")
+            payload = _json.dumps({
+                "contents": [{"parts": [{"text": prompt_text}]}],
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "responseSchema": schema_def
+                }
+            }).encode("utf-8")
             req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
             import time as _time
             for _attempt in range(5):
@@ -423,21 +520,77 @@ def _call_ollama(messages: list, label: str) -> Optional[str]:
                         log.warning("  [GEMINI] Rate limit (429) hit. Pausing 15s to clear window...")
                         _time.sleep(15)
                     else:
-                        raise he
+                        log.warning("  [GEMINI] HTTP error %s. Falling back to %s...", he, FALLBACK_ENGINE)
+                        return _call_fallback(messages, label)
+            log.warning("  [GEMINI] Retries exhausted. Falling back to %s...", FALLBACK_ENGINE)
+            return _call_fallback(messages, label)
         elif AI_ENGINE == "openai":
             log.info("  [LLM] Calling OpenAI Cloud API (%s)…", label)
             import urllib.request, json as _json, os
             api_key = os.environ.get("OPENAI_API_KEY", "")
             if not api_key:
-                log.error("  [OPENAI] OPENAI_API_KEY environment variable not set!")
-                return None
+                log.warning("  [OPENAI] OPENAI_API_KEY environment variable not set! Falling back to %s...", FALLBACK_ENGINE)
+                return _call_fallback(messages, label)
             url = "https://api.openai.com/v1/chat/completions"
-            payload = _json.dumps({"model": "gpt-4o-mini", "messages": messages, "response_format": {"type": "json_object"}, "temperature": 0}).encode("utf-8")
+            # Lowercase types for OpenAI JSON Schema
+            openai_schema = {
+                "name": "extraction_schema",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "page_number": {"type": "integer"},
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "Particulars": {"type": "string"},
+                                    "Quantity": {"type": "number"},
+                                    "Price": {"type": "number"},
+                                    "NetAmt": {"type": "number"}
+                                },
+                                "required": ["Particulars", "Quantity", "Price", "NetAmt"],
+                                "additionalProperties": False
+                            }
+                        }
+                    },
+                    "required": ["page_number", "items"],
+                    "additionalProperties": False
+                }
+            }
+            payload = _json.dumps({
+                "model": "gpt-4o-mini",
+                "messages": messages,
+                "response_format": {"type": "json_schema", "json_schema": openai_schema},
+                "temperature": 0
+            }).encode("utf-8")
             req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"})
-            with urllib.request.urlopen(req) as resp:
-                res_data = _json.loads(resp.read().decode("utf-8"))
-                return res_data["choices"][0]["message"]["content"]
+            try:
+                with urllib.request.urlopen(req) as resp:
+                    res_data = _json.loads(resp.read().decode("utf-8"))
+                    return res_data["choices"][0]["message"]["content"]
+            except Exception as exc:
+                log.warning("  [OPENAI] Call failed (%s). Falling back to %s...", exc, FALLBACK_ENGINE)
+                return _call_fallback(messages, label)
 
+        return _call_ollama_engine(messages, label)
+    except Exception as exc:
+        log.error("  [LLM] %s call failed: %s", AI_ENGINE, exc)
+        if AI_ENGINE != FALLBACK_ENGINE:
+            log.info("  [LLM] Attempting fallback engine '%s'...", FALLBACK_ENGINE)
+            return _call_fallback(messages, label)
+        return None
+
+
+def _call_fallback(messages: list, label: str) -> Optional[str]:
+    if FALLBACK_ENGINE == "ollama":
+        return _call_ollama_engine(messages, label + " [fallback]")
+    return None
+
+
+def _call_ollama_engine(messages: list, label: str) -> Optional[str]:
+    try:
         log.info("  [LLM] Calling Ollama model '%s' (%s)…", OLLAMA_MODEL, label)
         response = ollama.chat(
             model=OLLAMA_MODEL,
@@ -449,7 +602,7 @@ def _call_ollama(messages: list, label: str) -> Optional[str]:
         log.info("  [LLM] Received %d chars from model", len(reply))
         return reply
     except Exception as exc:
-        log.error("  [LLM] %s call failed: %s", AI_ENGINE, exc)
+        log.error("  [OLLAMA] Call failed: %s", exc)
         return None
 
 
@@ -479,128 +632,149 @@ def _parse_reply(raw_reply: str, page_num: int) -> Optional[dict]:
     return None
 
 
+def get_case_insensitive(d: dict, keys: list[str], default=None):
+    if not isinstance(d, dict):
+        return default
+    for k in keys:
+        for dk in d:
+            if dk.lower() == k.lower():
+                return d[dk]
+    return default
+
+
+def normalize_item(item: dict) -> dict:
+    if not isinstance(item, dict):
+        return {}
+    
+    # 1. Particulars
+    particulars = get_case_insensitive(item, ["Particulars", "Description", "Name", "Item", "Particular", "Text"], "")
+    if particulars is None:
+        particulars = ""
+    else:
+        particulars = str(particulars).strip()
+        
+    # 2. Quantity
+    qty_val = get_case_insensitive(item, ["Quantity", "Qty", "Count", "No"], None)
+    if qty_val in [None, "null", "", "None"]:
+        qty = 1.0
+    else:
+        try:
+            qty = float(str(qty_val).replace(",", "").strip())
+        except ValueError:
+            qty = 1.0
+            
+    # 3. Price
+    price_val = get_case_insensitive(item, ["Price", "Rate", "Charges", "Unit Price", "UnitPrice"], None)
+    price = None
+    if price_val not in [None, "null", "", "None"]:
+        try:
+            price = float(str(price_val).replace(",", "").strip())
+        except ValueError:
+            pass
+            
+    # 4. NetAmt
+    net_val = get_case_insensitive(item, ["NetAmt", "Amount", "Gross Amount", "NetAmount", "Total", "Charges Total"], None)
+    net = None
+    if net_val not in [None, "null", "", "None"]:
+        try:
+            net = float(str(net_val).replace(",", "").strip())
+        except ValueError:
+            pass
+            
+    # Fallbacks to align them mathematically
+    if price is None and net is not None:
+        price = round(net / qty, 2) if qty > 0 else net
+    elif net is None and price is not None:
+        net = round(price * qty, 2)
+    elif price is None and net is None:
+        price = 0.0
+        net = 0.0
+        
+    return {
+        "Particulars": particulars,
+        "Quantity": qty,
+        "Price": price,
+        "NetAmt": net
+    }
+
+
 def fix_ocr_json_math(items):
     """
     Given a list of item dictionaries, ensure that Qty * Price == NetAmt.
-    If they don't match (often due to OCR dropping a digit in the Total),
-    recalculate NetAmt based on Qty and Price.
-    Also fixes known OCR misreads for specific hospital inventory items.
+    If they don't match, recalculate NetAmt based on Qty and Price.
     """
-    merged_items = []
-    items = [it for it in items if isinstance(it, dict)]
-    i = 0
-    while i < len(items):
-        curr = items[i]
-        
-        if i + 1 < len(items):
-            nxt = items[i+1]
-            price_key = next((k for k in curr if 'price' in k.lower() or 'rate' in k.lower()), None)
-            net_key = next((k for k in curr if 'net' in k.lower() or 'amount' in k.lower() or 'total' in k.lower()), None)
+    normalized = []
+    for it in items:
+        if isinstance(it, dict):
+            normalized.append(normalize_item(it))
             
-            if price_key and net_key and price_key in nxt and net_key in nxt:
-                c_price = curr.get(price_key)
-                n_price = nxt.get(price_key)
-                c_net = curr.get(net_key)
-                n_net = nxt.get(net_key)
+    merged_items = []
+    i = 0
+    while i < len(normalized):
+        curr = normalized[i]
+        
+        if i + 1 < len(normalized):
+            nxt = normalized[i+1]
+            c_price = curr.get("Price")
+            n_price = nxt.get("Price")
+            c_net = curr.get("NetAmt")
+            n_net = nxt.get("NetAmt")
+            
+            # If they share the exact same price and netamt, they MIGHT be a split item
+            if c_price == n_price and c_net == n_net and c_price > 0:
+                c_part = str(curr.get('Particulars', '')).strip()
+                n_part = str(nxt.get('Particulars', '')).strip()
                 
-                # If they share the exact same price and netamt, they MIGHT be a split item
-                if c_price == n_price and c_net == n_net and c_price is not None:
-                    c_part = str(curr.get('Particulars', '')).strip()
-                    n_part = str(nxt.get('Particulars', '')).strip()
-                    
-                    c_is_tax = bool(re.search(r'\b(CGST|SGST|IGST)\b', c_part.upper()))
-                    n_is_tax = bool(re.search(r'\b(CGST|SGST|IGST)\b', n_part.upper()))
-                    
-                    c_has_id = bool(re.match(r'^\[.*?\]', c_part)) or c_is_tax
-                    n_has_id = bool(re.match(r'^\[.*?\]', n_part)) or n_is_tax
-                    
-                    # If BOTH have an ID code, they are definitively distinct items (e.g. Diet items). Do NOT merge.
-                    # Otherwise, if they share the exact same price, it's almost certainly an LLM split/duplicate hallucination.
-                    if c_has_id and n_has_id:
-                        should_merge = False
-                    else:
-                        should_merge = True
+                c_is_tax = bool(re.search(r'\b(CGST|SGST|IGST)\b', c_part.upper()))
+                n_is_tax = bool(re.search(r'\b(CGST|SGST|IGST)\b', n_part.upper()))
+                
+                c_has_id = bool(re.match(r'^\[.*?\]', c_part)) or c_is_tax
+                n_has_id = bool(re.match(r'^\[.*?\]', n_part)) or n_is_tax
+                
+                if c_has_id and n_has_id:
+                    should_merge = False
+                elif c_part == n_part:
+                    # Do not merge identical consecutive items (they are distinct billing entries)
+                    should_merge = False
+                else:
+                    should_merge = True
 
-                    if should_merge:
-                        curr['Particulars'] = c_part + " " + n_part
-                        c_qty = curr.get('Quantity')
-                        n_qty = nxt.get('Quantity')
-                        if c_qty in [None, "null", ""] and n_qty not in [None, "null", ""]:
-                            curr['Quantity'] = n_qty
-                        i += 2
-                        merged_items.append(curr)
-                        continue
+                if should_merge:
+                    curr['Particulars'] = (c_part + " " + n_part).strip()
+                    i += 2
+                    merged_items.append(curr)
+                    continue
         
         merged_items.append(curr)
         i += 1
 
+    # Final math correction for quantity and pricing (Triangulated Math Reconciliation)
     for item in merged_items:
-        # Fix known OCR misreads for hospital pharmacy invoice numbers
-        part_str = str(item.get("Particulars", ""))
-        if "--ein" in part_str and "1535.73" in str(item.get("Price")):
-            item["Particulars"] = "Bill :11842627/52655"
-        elif "Bil 1A" in part_str and "84.41" in str(item.get("Price")):
-            item["Particulars"] = "Bill :10752627/59582"
-        elif "Bitl:" in part_str and "286.39" in str(item.get("Price")):
-            item["Particulars"] = "Bill :11842627/53513"
+        qty = item.get("Quantity", 1.0)
+        price = item.get("Price", 0.0)
+        net = item.get("NetAmt", 0.0)
+        
+        expected_net = round(qty * price, 2)
+        if abs(expected_net - net) > 0.05:
+            # Check if NetAmt and Price are reliable, and Qty was OCR misread
+            if net > 0 and price > 0:
+                calc_qty = net / price
+                # If calculated quantity is close to an integer or standard decimal
+                if abs(calc_qty - round(calc_qty)) < 0.05 and round(calc_qty) > 0:
+                    item["Quantity"] = float(round(calc_qty))
+                    item["NetAmt"] = round(item["Quantity"] * price, 2)
+                    continue
+            # Check if NetAmt and Qty are reliable, and Price had an OCR decimal/digit misread
+            if net > 0 and qty > 0:
+                calc_price = round(net / qty, 2)
+                # If the calculated price differs only by a common OCR error
+                if abs(calc_price - price) > 0.05:
+                    item["Price"] = calc_price
+                    item["NetAmt"] = round(qty * calc_price, 2)
+                    continue
+            # Fallback: adjust NetAmt to match Qty * Price
+            item["NetAmt"] = expected_net
 
-        # Known OCR dot-matrix hallucination for Tiger Catheters
-        particulars = str(item.get("Particulars", "")).upper()
-        if "CATHETERS TIGER" in particulars:
-            if str(item.get("Price")) == "2769.00":
-                item["Price"] = "2709.00"
-            if str(item.get("NetAmt")) == "2769.00":
-                item["NetAmt"] = "2709.00"
-
-        # Force missing quantity to 1.0 if there is a price
-        if "Quantity" in item and item["Quantity"] in [None, "null", ""]:
-            price_k = next((k for k in item if 'price' in k.lower() or 'rate' in k.lower()), None)
-            if price_k and item.get(price_k):
-                item["Quantity"] = 1.0
-
-        try:
-            qty_key = next((k for k in item if 'qty' in k.lower() or 'quantity' in k.lower()), None)
-            price_key = next((k for k in item if 'price' in k.lower() or 'rate' in k.lower() or 'charges' in k.lower() and 'net' not in k.lower()), None)
-            net_key = next((k for k in item if 'net' in k.lower() or 'amount' in k.lower() or 'total' in k.lower()), None)
-            
-            if qty_key and price_key and net_key:
-                q_str = str(item[qty_key]).replace(',', '').strip()
-                p_str = str(item[price_key]).replace(',', '').strip()
-                n_str = str(item[net_key]).replace(',', '').strip()
-                
-                q_val = float(q_str) if q_str.replace('.','',1).isdigit() else 1.0
-                p_val = float(p_str) if p_str.replace('.','',1).isdigit() else None
-                n_val = float(n_str) if n_str.replace('.','',1).isdigit() else None
-                
-                if p_val is not None and n_val is not None:
-                    if q_val > 1.0 and p_val != 0.0:
-                        if q_val >= 50 and p_val == n_val:
-                            item[qty_key] = 1.0
-                            q_val = 1.0
-                        elif q_val == p_val == n_val and q_val > 1.0:
-                            item[qty_key] = 1.0
-                            q_val = 1.0
-                            
-                    if q_val == 1.0 and p_val != n_val:
-                        if p_val > 10000 and '.' not in p_str and '.' in n_str:
-                            item[price_key] = item[net_key]
-                        elif p_str.endswith('.00') and not n_str.endswith('.00'):
-                            item[net_key] = item[price_key]
-                        elif n_str.endswith('.00') and not p_str.endswith('.00'):
-                            item[price_key] = item[net_key]
-                        else:
-                            item[price_key] = item[net_key]
-                    elif q_val > 1.0 and p_val != 0.0:
-                        if p_val == n_val:
-                            pass
-                        elif p_val > n_val and round(p_val / q_val, 2) <= n_val:
-                            pass
-                        else:
-                            expected_net = round(q_val * p_val, 2)
-                            if expected_net != n_val and (p_val < n_val or n_val == 0):
-                                item[net_key] = expected_net
-        except Exception:
-            pass
     return merged_items
 
 
@@ -612,21 +786,48 @@ def _extract_page(page_text: str, page_num: int, max_retries: int = 5) -> dict:
     if len(lines) > 28:
         header = lines[:10]
         body = lines[10:]
-        chunk_size = 18
+        
+        chunks_text = []
+        current_chunk = []
+        for line in body:
+            current_chunk.append(line)
+            # A line ends with a price/decimal if it matches standard numeric pricing pattern at the end
+            has_price_end = bool(re.search(r'\b\d+(?:\.\d{2})?\s*$', line.strip()))
+            
+            # Split if we have reached 18 lines and it's a safe boundary, or if we hit the 28 lines limit
+            if (len(current_chunk) >= 18 and has_price_end) or len(current_chunk) >= 28:
+                chunks_text.append("\n".join(header + current_chunk))
+                current_chunk = []
+                
+        if current_chunk:
+            chunks_text.append("\n".join(header + current_chunk))
+            
         all_chunk_items = []
-        for i in range(0, len(body), chunk_size):
-            chunk_lines = header + body[i : i + chunk_size]
-            sub_text = "\n".join(chunk_lines)
+        for sub_text in chunks_text:
             res = _extract_page_single(sub_text, page_num, max_retries)
             all_chunk_items.extend(res.get("items", []))
         
-        seen = set()
+        seen_header_keys = set()
         unique = []
+        header_text_lower = "\n".join(header).lower()
         for it in all_chunk_items:
             if isinstance(it, dict):
-                key = tuple((k, str(it[k]).strip()) for k in sorted(it.keys()) if k != "page_number")
-                if key not in seen:
-                    seen.add(key)
+                part = str(it.get("Particulars", "")).strip()
+                part_lower = part.lower()
+                
+                # Only deduplicate items that are actually present in the table header text,
+                # as header lines are prefixed to every chunk and can cause duplication.
+                # Body slices have zero overlap, so consecutive identical body items are legitimate.
+                is_header_item = False
+                if len(part_lower) > 3 and part_lower[:15] in header_text_lower:
+                    is_header_item = True
+                    
+                if is_header_item:
+                    key = tuple((k, str(it[k]).strip()) for k in sorted(it.keys()) if k != "page_number")
+                    if key not in seen_header_keys:
+                        seen_header_keys.add(key)
+                        unique.append(it)
+                else:
                     unique.append(it)
         return {"page_number": page_num, "items": unique}
 
@@ -762,10 +963,25 @@ def _extract_page_single(page_text: str, page_num: int, max_retries: int = 5) ->
                         v_lower = v.lower()
                         # Ignore generic LLM hallucinated words that might accidentally be on the page
                         if v_lower not in ["medicine", "medication", "consultation fee", "ip charges", "room charge", "pharmacy", "amount", "total", "total amount", "gross amount", "net amount"]:
-                            # Look for the first 15 chars to account for OCR splitting
-                            if v_lower[:15] in raw_text_lower:
+                            # Try exact direct match first
+                            if v_lower[:15] in raw_text_lower or v_lower in raw_text_lower:
                                 is_real = True
                                 break
+                            
+                            # Fallback to sliding-window fuzzy matching to handle OCR word splits/merges
+                            import difflib
+                            words = raw_text_lower.split()
+                            v_words = v_lower.split()
+                            v_len = len(v_words)
+                            if v_len > 0:
+                                for idx in range(max(1, len(words) - v_len + 1)):
+                                    window = " ".join(words[idx : idx + v_len])
+                                    ratio = difflib.SequenceMatcher(None, v_lower, window).ratio()
+                                    if ratio >= 0.75:  # 75% similarity threshold
+                                        is_real = True
+                                        break
+                                if is_real:
+                                    break
                 
                 if not is_real:
                     continue
@@ -798,7 +1014,7 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
 
     results_by_index: dict[int, dict] = {}
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         future_to_idx = {
             pool.submit(_extract_page, text, i+1): i
             for i, text in enumerate(pages_text)
@@ -813,8 +1029,6 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
 
     # Reassemble in original document order
     pages_results = []
-    total_items = 0
-    is_doc3 = "doc3" in filename.lower()
 
     for idx in range(total_pages):
         res = results_by_index.get(idx, {"page_number": idx+1, "items": []})
@@ -825,38 +1039,48 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
         for item in raw_items:
             if not isinstance(item, dict):
                 continue
-            new_item = {}
-            if "Particulars" in item:
-                new_item["Particulars"] = item["Particulars"]
-            elif "description" in item:
-                new_item["Particulars"] = item["description"]
-            elif "Name" in item:
-                new_item["Particulars"] = item["Name"]
-
-            if is_doc3:
-                if page_num == 1:
-                    p_val = item.get("Amount", item.get("NetAmt", item.get("Total", item.get("Charges", item.get("Price", item.get("Rate"))))))
-                    if p_val is not None:
-                        new_item["Price"] = p_val
-                else:
-                    q_val = item.get("Quantity", item.get("Qty", item.get("Count", 1.0)))
-                    if q_val is not None:
-                        new_item["Quantity"] = q_val
-                    p_val = item.get("Amount", item.get("NetAmt", item.get("Total", item.get("Charges", item.get("Price", item.get("Rate"))))))
-                    if p_val is not None:
-                        new_item["Price"] = p_val
-            else:
-                for k, v in item.items():
-                    new_item[k] = v
-
-            cleaned_items.append(new_item)
+            new_item = normalize_item(item)
+            if new_item.get("Particulars"):
+                cleaned_items.append(new_item)
 
         clean_res = {
             "page_number": page_num,
             "items": cleaned_items
         }
         pages_results.append(clean_res)
-        total_items += len(cleaned_items)
+
+    # ── Summary Page Deduplication Check ─────────────────────────────────────
+    def remove_summary_pages(pages_list):
+        page_sums = []
+        for p in pages_list:
+            p_sum = 0.0
+            for item in p.get("items", []):
+                p_sum += item.get("NetAmt", 0.0)
+            page_sums.append(p_sum)
+            
+        n_pages = len(pages_list)
+        if n_pages <= 1:
+            return pages_list
+            
+        for k in range(n_pages):
+            s_k = page_sums[k]
+            if s_k <= 0:
+                continue
+            other_sum = sum(page_sums[j] for j in range(n_pages) if j != k)
+            other_items_count = sum(len(pages_list[j].get("items", [])) for j in range(n_pages) if j != k)
+            num_items_k = len(pages_list[k].get("items", []))
+            
+            # If s_k matches sum of other pages, and has fewer items, drop page k (summary page)
+            if num_items_k < other_items_count and abs(s_k - other_sum) < max(10.0, s_k * 0.002):
+                log.info("  [DEDUPLICATION] Page %d is identified as a summary page (sum %.2f matches sum of other pages %.2f). Dropping Page %d to prevent double-counting.", pages_list[k]["page_number"], s_k, other_sum, pages_list[k]["page_number"])
+                pages_list_copy = [p for i, p in enumerate(pages_list) if i != k]
+                return remove_summary_pages(pages_list_copy)
+        return pages_list
+
+    pages_results = remove_summary_pages(pages_results)
+    
+    # Recalculate total items
+    total_items = sum(len(p.get("items", [])) for p in pages_results)
 
     if total_items == 0 and total_pages > 0:
         log.warning("  [LLM] No items extracted from any pages.")
@@ -868,25 +1092,64 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
         extracted_sum = 0.0
         for p in pages_results:
             for item in p.get("items", []):
-                val = item.get("NetAmt", item.get("Amount", item.get("Price", item.get("Rate", 0.0))))
-                if isinstance(val, (int, float)):
-                    extracted_sum += val
-                elif isinstance(val, str):
-                    clean_v = re.sub(r"[^\d.]", "", val)
-                    if clean_v.replace(".", "", 1).isdigit():
-                        extracted_sum += float(clean_v)
+                extracted_sum += item.get("NetAmt", 0.0)
         extracted_sum = round(extracted_sum, 2)
 
         doc_full_text = "\n".join(pages_text)
-        footer_matches = re.findall(
-            r"(?:gross\s+amount|subtotal|net\s+payable|total\s+claimed|grand\s+total)[\s:=-]+(?:rs\.?|inr)?\s*([\d,]+\.\d{2})",
+        
+        # Parse for declared invoice total elements
+        subtotal_matches = re.findall(
+            r"(?:sub\s*total|gross\s+amount|total\s+charges)[\s:=-]+(?:rs\.?|inr)?\s*([\d,]+\.\d{2})",
             doc_full_text,
             re.IGNORECASE,
         )
-        if footer_matches:
-            footer_vals = [float(m.replace(",", "")) for m in footer_matches]
-            target_total = max(footer_vals)
+        tax_matches = re.findall(
+            r"(?:tax|cgst|sgst|igst|vat|gst)[\s:=-]+(?:rs\.?|inr)?\s*([\d,]+\.\d{2})",
+            doc_full_text,
+            re.IGNORECASE,
+        )
+        discount_matches = re.findall(
+            r"(?:discount|concession|rebate)[\s:=-]+(?:rs\.?|inr)?\s*([\d,]+\.\d{2})",
+            doc_full_text,
+            re.IGNORECASE,
+        )
+        total_matches = re.findall(
+            r"(?:grand\s+total|net\s+payable|total\s+claimed|total\s+amount|amount\s+payable|net\s+amount)[\s:=-]+(?:rs\.?|inr)?\s*([\d,]+\.\d{2})",
+            doc_full_text,
+            re.IGNORECASE,
+        )
+
+        subtotal_val = max([float(m.replace(",", "")) for m in subtotal_matches]) if subtotal_matches else 0.0
+        tax_val = sum([float(m.replace(",", "")) for m in tax_matches]) if tax_matches else 0.0
+        discount_val = max([float(m.replace(",", "")) for m in discount_matches]) if discount_matches else 0.0
+        target_total = max([float(m.replace(",", "")) for m in total_matches]) if total_matches else 0.0
+
+        if target_total == 0.0 and subtotal_val > 0.0:
+            target_total = subtotal_val + tax_val - discount_val
+
+        if target_total > 0.0:
             diff = round(target_total - extracted_sum, 2)
+            
+            # If extracted sum is larger than the target total, check if we included tax/subtotal lines by mistake
+            if diff < -2.0:
+                log.info("  [RECONCILIATION] Extracted sum (%.2f) exceeds target total (%.2f). Checking for duplicate totals/taxes...", extracted_sum, target_total)
+                for p in pages_results:
+                    filtered = []
+                    for item in p.get("items", []):
+                        part = item.get("Particulars", "").upper()
+                        # If a line item describes "TOTAL" or "CGST/SGST/TAX" and matches the tax or subtotal value, filter it
+                        is_total_line = any(k in part for k in ["SUBTOTAL", "GRAND TOTAL", "NET PAYABLE", "TOTAL AMOUNT"])
+                        is_tax_line = any(k in part for k in ["CGST", "SGST", "IGST", "TAX"]) and abs(item.get("NetAmt", 0.0) - tax_val) < 2.0
+                        
+                        if is_total_line or is_tax_line:
+                            log.info("  [RECONCILIATION] Filtering out non-item line: %s (Amt: %.2f)", item.get("Particulars"), item.get("NetAmt"))
+                            extracted_sum -= item.get("NetAmt", 0.0)
+                            continue
+                        filtered.append(item)
+                    p["items"] = filtered
+                extracted_sum = round(extracted_sum, 2)
+                diff = round(target_total - extracted_sum, 2)
+
             if abs(diff) > 2.0:
                 log.warning("  [RECONCILIATION] Extracted sum (%.2f) != Invoice Total (%.2f). Discrepancy: %+.2f", extracted_sum, target_total, diff)
                 if diff > 5.0 and len(pages_results) > 0:
@@ -901,17 +1164,52 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
                         if rec_clean and rec_clean.get("items"):
                             recovered = rec_clean["items"]
                             log.info("  [RECONCILIATION] Self-Correction recovered %d missing item(s)!", len(recovered))
-                            pages_results[-1]["items"].extend(recovered)
-                            total_items += len(recovered)
+                            # Add recovered items to the last page after normalizing them
+                            norm_recovered = [normalize_item(it) for it in recovered]
+                            pages_results[-1]["items"].extend(norm_recovered)
+                            total_items += len(norm_recovered)
             else:
                 log.info("  [RECONCILIATION] 100%% Balanced! Extracted sum (%.2f) matches Invoice Total (%.2f).", extracted_sum, target_total)
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("  [RECONCILIATION] Error during verification loop: %s", e)
+
+    # ── Document Metadata Extraction ─────────────────────────────────────────
+    vendor_name = ""
+    invoice_number = ""
+    invoice_date = ""
+    currency = "INR"
+
+    first_page_text = pages_text[0] if pages_text else ""
+    date_m = re.search(r'\b(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}|\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2})\b', first_page_text)
+    if date_m:
+        invoice_date = date_m.group(1)
+    inv_m = re.search(r'(?:Bill|Invoice|Receipt|Bill No|Inv No|MRD No|Visit Code)[\s:#=-]+([A-Z0-9\-\/]+)', first_page_text, re.IGNORECASE)
+    if inv_m:
+        invoice_number = inv_m.group(1)
+    for line in first_page_text.splitlines()[:8]:
+        line_clean = line.strip()
+        if len(line_clean) > 4 and not re.match(r'^\d', line_clean) and not any(kw in line_clean.lower() for kw in ["patient", "mrd", "visit", "date", "bill"]):
+            vendor_name = line_clean
+            break
+
+    summary_block = {
+        "extracted_subtotal": round(extracted_sum, 2),
+        "declared_subtotal": round(subtotal_val, 2) if subtotal_val > 0 else round(extracted_sum, 2),
+        "total_tax": round(tax_val, 2),
+        "total_discount": round(discount_val, 2),
+        "declared_grand_total": round(target_total, 2) if target_total > 0 else round(extracted_sum, 2),
+        "reconciliation_status": "BALANCED" if (target_total == 0 or abs(target_total - extracted_sum) <= 2.0) else f"DISCREPANCY_{round(target_total - extracted_sum, 2)}"
+    }
 
     return {
         "document_name": filename,
+        "vendor_name": vendor_name,
+        "invoice_number": invoice_number,
+        "invoice_date": invoice_date,
+        "currency": currency,
         "total_pages": total_pages,
         "total_items": total_items,
+        "summary": summary_block,
         "pages": pages_results
     }
 
@@ -1095,12 +1393,16 @@ if __name__ == "__main__":
     parser.add_argument("--model", default=OLLAMA_MODEL, help=f"Ollama model (default: {OLLAMA_MODEL})")
     parser.add_argument("--output-dir", default=str(OUTPUT_DIR), type=Path)
     parser.add_argument("--engine", default="ollama", choices=["ollama", "gemini", "openai"], help="AI Engine selection")
+    parser.add_argument("--fallback-engine", default="ollama", choices=["ollama", "gemini", "openai"], help="Fallback AI engine when primary cloud engine fails")
+    parser.add_argument("--workers", type=int, default=MAX_WORKERS, help=f"Number of concurrent page threads (default: {MAX_WORKERS})")
     parser.add_argument("--watch", type=Path, help="Folder watchdog mode — continuously monitor folder for new documents")
     args = parser.parse_args()
 
-    OLLAMA_MODEL = args.model
-    OUTPUT_DIR   = args.output_dir
-    AI_ENGINE    = args.engine
+    OLLAMA_MODEL    = args.model
+    OUTPUT_DIR      = args.output_dir
+    AI_ENGINE       = args.engine
+    FALLBACK_ENGINE = args.fallback_engine
+    MAX_WORKERS     = args.workers
 
     if args.watch:
         import time
