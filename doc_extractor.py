@@ -351,6 +351,11 @@ def extract_text(file_path: Path) -> list[str]:
             p = re.sub(r"Location:.*", "", p)
             # Fix stray quotes inside numbers (e.g. 2'13.00 -> 213.00)
             p = re.sub(r'\b(\d+)[\'’](\d+\.\d{2})\b', r'\1\2', p)
+            # Fix OCR misreads inside prices: [l I] -> 1 and [S s] -> 5 surrounded by digits
+            p = re.sub(r'\b([0-9]+)[lI]([0-9]*\.[0-9]{2})\b', r'\g<1>1\2', p)
+            p = re.sub(r'(?<=\d)[Ss](?=\d|\.\d{2})', '5', p)
+            # Repair broken decimals separated by whitespace (e.g. 1234 . 00 -> 1234.00)
+            p = re.sub(r'\b(\d+)\s*\.\s*(\d{2})\b', r'\1.\2', p)
             # Fix OCR misread where zeroes in prices are misread as o or O (like 6oo.oo -> 600.00)
             p = re.sub(r'(?<=\d)[oO]+(?:\.[oO0]{2})\b', lambda m: '0'*len(m.group(0).split('.')[0]) + '.00', p)
             # Fix OCR misread where .oo or .OO is misread instead of .00
@@ -780,13 +785,18 @@ def normalize_item(item: dict) -> dict:
         if k_lower not in ["particulars", "description", "name", "item", "particular", "text",
                            "quantity", "qty", "count", "no",
                            "price", "rate", "charges", "unit price", "unitprice",
-                           "netamt", "amount", "gross amount", "netamount", "total", "charges total"]:
+                           "netamt", "amount", "gross amount", "netamount", "total", "charges total", "item_type"]:
             normalized[k] = v
             
     normalized["Particulars"] = particulars
     normalized["Quantity"] = qty
     normalized["Price"] = price
     normalized["NetAmt"] = net
+    
+    if bool(re.search(r'\b(CGST|SGST|IGST|GST|VAT)\b', particulars.upper())):
+        normalized["item_type"] = "tax"
+    else:
+        normalized["item_type"] = "charge"
     
     return normalized
 
@@ -963,29 +973,40 @@ def _extract_page(page_text: str, page_num: int, max_retries: int = 5) -> dict:
             res = _extract_page_single(sub_text, page_num, max_retries)
             all_chunk_items.extend(res.get("items", []))
         
-        seen_header_keys = set()
-        unique = []
-        header_text_lower = "\n".join(header).lower()
+        seen_keys = set()
+        exact_unique = []
         for it in all_chunk_items:
             if isinstance(it, dict):
-                part = str(it.get("Particulars", "")).strip()
-                part_lower = part.lower()
+                key = tuple((k, str(it[k]).strip()) for k in sorted(it.keys()) if k != "page_number")
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    exact_unique.append(it)
+        
+        # Fuzzy Deduplication Pass across the page items
+        import difflib
+        fuzzy_unique = []
+        for it in exact_unique:
+            if not isinstance(it, dict):
+                continue
+            is_dup = False
+            for existing in fuzzy_unique:
+                if isinstance(existing, dict):
+                    p_curr = it.get("Price", 0.0)
+                    p_ex = existing.get("Price", 0.0)
+                    q_curr = it.get("Quantity", 1.0)
+                    q_ex = existing.get("Quantity", 1.0)
+                    if p_curr == p_ex and q_curr == q_ex and p_curr != 0 and p_curr is not None:
+                        part_curr = str(it.get("Particulars", "")).strip()
+                        part_ex = str(existing.get("Particulars", "")).strip()
+                        if part_curr.lower() in part_ex.lower() or part_ex.lower() in part_curr.lower() or difflib.SequenceMatcher(None, part_curr.lower(), part_ex.lower()).ratio() > 0.80:
+                            if len(part_curr) > len(part_ex):
+                                existing["Particulars"] = part_curr
+                            is_dup = True
+                            break
+            if not is_dup:
+                fuzzy_unique.append(it)
                 
-                # Only deduplicate items that are actually present in the table header text,
-                # as header lines are prefixed to every chunk and can cause duplication.
-                # Body slices have zero overlap, so consecutive identical body items are legitimate.
-                is_header_item = False
-                if len(part_lower) > 3 and part_lower[:15] in header_text_lower:
-                    is_header_item = True
-                    
-                if is_header_item:
-                    key = tuple((k, str(it[k]).strip()) for k in sorted(it.keys()) if k != "page_number")
-                    if key not in seen_header_keys:
-                        seen_header_keys.add(key)
-                        unique.append(it)
-                else:
-                    unique.append(it)
-        return {"page_number": page_num, "items": unique}
+        return {"page_number": page_num, "items": fuzzy_unique}
 
     return _extract_page_single(page_text, page_num, max_retries)
 
@@ -1017,6 +1038,7 @@ def _extract_page_single(page_text: str, page_num: int, max_retries: int = 5) ->
         
     headers = detect_page_headers(page_text)
     keys_instruction = "\n".join(f'- "{h}": Extract the column value for {h}.' for h in headers)
+    detected_cols_str = ", ".join(headers)
     
     sample_item = {}
     for h in headers:
@@ -1042,6 +1064,7 @@ def _extract_page_single(page_text: str, page_num: int, max_retries: int = 5) ->
     ocr_instructions = ""
     user_prompt = f"""Extract every single financial/billing line item from the invoice/receipt text below.
 
+DETECTED TABLE COLUMNS FOR THIS PAGE: [{detected_cols_str}]
 For each line item, extract the data and map it EXACTLY to the following JSON keys:
 {keys_instruction}
 
@@ -1328,18 +1351,23 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
         res = results_by_index.get(idx, {"page_number": idx+1, "items": []})
         page_num = idx + 1
         raw_items = res.get("items", [])
-        cleaned_items = []
+        page_items = []
+        page_taxes = []
 
         for item in raw_items:
             if not isinstance(item, dict):
                 continue
             new_item = normalize_item(item)
             if new_item.get("Particulars"):
-                cleaned_items.append(new_item)
+                if new_item.get("item_type") == "tax":
+                    page_taxes.append(new_item)
+                else:
+                    page_items.append(new_item)
 
         clean_res = {
             "page_number": page_num,
-            "items": cleaned_items
+            "items": page_items,
+            "taxes": page_taxes
         }
         pages_results.append(clean_res)
 
@@ -1472,7 +1500,7 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
             diff = round(target_total - extracted_sum, 2)
             
             # If extracted sum is larger than the target total, check if we included tax/subtotal lines by mistake
-            if diff < -2.0:
+            if diff < -1.0:
                 log.info("  [RECONCILIATION] Extracted sum (%.2f) exceeds target total (%.2f). Checking for duplicate totals/taxes...", extracted_sum, target_total)
                 raw_subtotals = [float(m.group(1)) for m in re.finditer(r'Sub\s*Total\s*:\s*(\d+(?:\.\d{2})?)', doc_full_text, re.IGNORECASE)]
                 for p in pages_results:
@@ -1495,31 +1523,35 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
                 extracted_sum = round(extracted_sum, 2)
                 diff = round(target_total - extracted_sum, 2)
 
-            if abs(diff) > 2.0:
-                log.warning("  [RECONCILIATION] Extracted sum (%.2f) != Invoice Total (%.2f). Discrepancy: %+.2f", extracted_sum, target_total, diff)
-                if diff > 5.0 and len(pages_results) > 0:
-                    log.info("  [RECONCILIATION] Triggering AI Self-Correction loop to recover missing $%.2f...", diff)
-                    rec_prompt = [
-                        {"role": "system", "content": "You are a hospital billing audit AI."},
-                        {"role": "user", "content": f"Invoice text:\n{doc_full_text[:5000]}\n\nExtracted items total {extracted_sum}, but document footer total is {target_total}. Find the missing item costing approximately {diff}. Return ONLY JSON format: {{\"items\": [{{\"Particulars\": \"missing item\", \"Quantity\": 1, \"Price\": {diff}, \"NetAmt\": {diff}}}]}}"}
-                    ]
-                    rec_reply = _call_llm(rec_prompt, "self-correction recovery")
-                    if rec_reply:
-                        rec_clean = _parse_reply(rec_reply, 99)
-                        if rec_clean and rec_clean.get("items"):
-                            recovered = rec_clean["items"]
-                            log.info("  [RECONCILIATION] Self-Correction recovered %d missing item(s)!", len(recovered))
-                            # Add recovered items to the last page after normalizing them
-                            norm_recovered = [normalize_item(it) for it in recovered]
-                            pages_results[-1]["items"].extend(norm_recovered)
-                            total_items += len(norm_recovered)
-                            # Update extracted_sum and diff after recovery
-                            for r_item in norm_recovered:
-                                extracted_sum += r_item.get("NetAmt", 0.0)
-                            extracted_sum = round(extracted_sum, 2)
-                            diff = round(target_total - extracted_sum, 2)
-                            if abs(diff) <= 2.0:
-                                log.info("  [RECONCILIATION] Balanced after self-correction! Extracted sum (%.2f) matches Invoice Total (%.2f).", extracted_sum, target_total)
+            # Three-Way Accounting Equation Check: check if extracted base charges + taxes or - discount balance to target_total
+            if abs(diff) > 1.0:
+                if abs((extracted_sum + tax_val - discount_val) - target_total) <= 2.0 or abs((extracted_sum + tax_val) - target_total) <= 2.0 or abs((extracted_sum - discount_val) - target_total) <= 2.0:
+                    log.info("  [RECONCILIATION] Three-Way Accounting Check verified balanced! Extracted base sum (%.2f) with taxes/discounts matches target total (%.2f).", extracted_sum, target_total)
+                else:
+                    log.warning("  [RECONCILIATION] Extracted sum (%.2f) != Invoice Total (%.2f). Discrepancy: %+.2f", extracted_sum, target_total, diff)
+                    if diff > 1.0 and len(pages_results) > 0:
+                        log.info("  [RECONCILIATION] Triggering AI Self-Correction loop to recover missing $%.2f...", diff)
+                        rec_prompt = [
+                            {"role": "system", "content": "You are a hospital billing audit AI."},
+                            {"role": "user", "content": f"Invoice text:\n{doc_full_text[:5000]}\n\nExtracted items total {extracted_sum}, but document footer total is {target_total}. Find the missing item costing approximately {diff}. Return ONLY JSON format: {{\"items\": [{{\"Particulars\": \"missing item\", \"Quantity\": 1, \"Price\": {diff}, \"NetAmt\": {diff}}}]}}"}
+                        ]
+                        rec_reply = _call_llm(rec_prompt, "self-correction recovery")
+                        if rec_reply:
+                            rec_clean = _parse_reply(rec_reply, 99)
+                            if rec_clean and rec_clean.get("items"):
+                                recovered = rec_clean["items"]
+                                log.info("  [RECONCILIATION] Self-Correction recovered %d missing item(s)!", len(recovered))
+                                # Add recovered items to the last page after normalizing them
+                                norm_recovered = [normalize_item(it) for it in recovered]
+                                pages_results[-1]["items"].extend(norm_recovered)
+                                total_items += len(norm_recovered)
+                                # Update extracted_sum and diff after recovery
+                                for r_item in norm_recovered:
+                                    extracted_sum += r_item.get("NetAmt", 0.0)
+                                extracted_sum = round(extracted_sum, 2)
+                                diff = round(target_total - extracted_sum, 2)
+                                if abs(diff) <= 2.0:
+                                    log.info("  [RECONCILIATION] Balanced after self-correction! Extracted sum (%.2f) matches Invoice Total (%.2f).", extracted_sum, target_total)
             else:
                 log.info("  [RECONCILIATION] 100%% Balanced! Extracted sum (%.2f) matches Invoice Total (%.2f).", extracted_sum, target_total)
     except Exception as e:
@@ -1535,6 +1567,11 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
         for item in p.get("items", []):
             denorm_items.append(denormalize_item(item, headers))
         p["items"] = denorm_items
+
+        denorm_taxes = []
+        for tax in p.get("taxes", []):
+            denorm_taxes.append(denormalize_item(tax, headers))
+        p["taxes"] = denorm_taxes
 
     return {
         "document_name": filename,
@@ -1564,7 +1601,7 @@ def save_csv(data: dict, output_path: Path) -> None:
     all_keys = set()
     all_items = []
     for page in pages:
-        items = page.get("items", [])
+        items = page.get("items", []) + page.get("taxes", [])
         for item in items:
             # Inject page_number so it's in the CSV
             item["_page_number"] = page.get("page_number")
@@ -1597,7 +1634,7 @@ def save_excel(data: dict, output_path: Path) -> None:
         all_keys = set()
         all_items = []
         for page in pages:
-            for item in page.get("items", []):
+            for item in (page.get("items", []) + page.get("taxes", [])):
                 item["_page_number"] = page.get("page_number")
                 all_keys.update(item.keys())
                 all_items.append(item)
@@ -1633,7 +1670,7 @@ def append_to_master_excel(data: dict, master_path: Path) -> None:
         doc_name = data.get("document_name", "")
         for page in data.get("pages", []):
             page_num = page.get("page_number", "")
-            for item in page.get("items", []):
+            for item in (page.get("items", []) + page.get("taxes", [])):
                 part = item.get("Particulars", item.get("description", item.get("Name", "")))
                 qty = item.get("Quantity", item.get("Qty", item.get("Count", 1.0)))
                 price = item.get("Price", item.get("Rate", item.get("Amount", 0.0)))
