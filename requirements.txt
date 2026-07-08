@@ -5,3 +5,5 @@ paddleocr
 numpy
 ollama
 python-docx
+easyocr
+pymupdf

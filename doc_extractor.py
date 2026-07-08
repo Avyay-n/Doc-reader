@@ -37,9 +37,12 @@ except ImportError:
     PyPDF2 = None  # type: ignore
 
 try:
-    import fitz  # PyMuPDF
+    import pymupdf as fitz
 except ImportError:
-    fitz = None  # type: ignore
+    try:
+        import fitz  # type: ignore
+    except ImportError:
+        fitz = None  # type: ignore
 
 try:
     import numpy as np
@@ -54,7 +57,7 @@ def get_paddle_ocr():
     if not _paddle_ocr_initialized:
         _paddle_ocr_initialized = True
         try:
-            from paddleocr import PaddleOCR
+            from paddleocr import PaddleOCR  # type: ignore # pylint: disable=import-error
             _paddle_ocr_engine = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
         except Exception:
             _paddle_ocr_engine = None
@@ -93,7 +96,7 @@ OUTPUT_DIR  = Path("output_docs")
 OLLAMA_MODEL    = "llama3.1"
 AI_ENGINE       = "ollama"
 FALLBACK_ENGINE = "ollama"
-MAX_WORKERS     = 1
+MAX_WORKERS     = 4
 
 SUPPORTED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".txt", ".docx"}
 
@@ -174,7 +177,7 @@ def extract_text_from_pdf(file_path: Path) -> list[str]:
             with pdfplumber.open(file_path) as pdf:
                 pages_text = []
                 for p in pdf.pages:
-                    text = p.extract_text(layout=True)
+                    text = p.extract_text(layout=False)
                     pages_text.append(text or "")
                 if any(pt.strip() for pt in pages_text):
                     return pages_text
@@ -332,6 +335,18 @@ def extract_text(file_path: Path) -> list[str]:
     cleaned_pages = []
     for p in pages:
         if p.strip():
+            # Split merged category headers from serial numbers and items
+            cat_headers = [
+                r"ADMINISTRATIVE CHARGES", r"ADMISSION", r"BED CHARGES", r"DIETETICS DEPARTMENT",
+                r"DOCTORS VISIT CHARGE", r"LABORATORY", r"NURSING CHARGES", r"PROCEDURE/SERVICE CHARGE",
+                r"RADIOLOGY", r"CONSUMABLES-IP PHARMACY", r"MEDICINE-IP PHARMACY", r"MATERIALS",
+                r"IMPLANT CHARGES", r"DIET", r"GST ON BED CHARGES \d+%", r"THEATRE CHARGES",
+                r"SURGEON FEE", r"ANASTHETISTS FEES", r"SURGICAL SUPPORT FEES", r"CSSD CHARGES",
+                r"MISCELLANEOUS", r"PHARMACY DRUGS", r"PARTICULARS CHARGES"
+            ]
+            cat_pattern = r"^(" + "|".join(cat_headers) + r")\s+(\d+)\b"
+            p = re.sub(cat_pattern, r"\1\n\2", p, flags=re.IGNORECASE | re.MULTILINE)
+
             # Remove "Location:" lines which the LLM often misinterprets as items
             p = re.sub(r"Location:.*", "", p)
             # Fix stray quotes inside numbers (e.g. 2'13.00 -> 213.00)
@@ -347,9 +362,9 @@ def extract_text(file_path: Path) -> list[str]:
             # Separate table headers merged with first row on same line
             p = re.sub(r'\b(PARTICULARS\s+(?:CHARGES|AMOUNT|RATE|PRICE|QTY|QUANTITY))\s+(?=[A-Z0-9\[{])', r'\1\n', p, flags=re.IGNORECASE)
             # Strip purely patient metadata header lines
-            p = re.sub(r'^.*?(?:Company|MRD No|Patient Name|Visit Code|Vlslt|Patlent|Age, Sex)[^\n]*$', '', p, flags=re.IGNORECASE | re.MULTILINE)
+            p = re.sub(r'^.*?(?:\bCompany\b|\bMRD\s*No\b|\bPatient\s*Name\b|\bVisit\s*Code\b|\bVlslt\b|\bPatlent\b|\bAge,\s*Sex\b)[^\n]*$', '', p, flags=re.IGNORECASE | re.MULTILINE)
             # Strip patient metadata prefixes up to item code
-            p = re.sub(r'^(?:.*?(?:Company|MRD No|Patient Name|Visit Code|Vlslt|Patlent)[^\n]*?)(?=\b[A-Z]{2}-\d{2}-\d{4}\b)', '', p, flags=re.IGNORECASE | re.MULTILINE)
+            p = re.sub(r'^(?:.*?(?:\bCompany\b|\bMRD\s*No\b|\bPatient\s*Name\b|\bVisit\s*Code\b|\bVlslt\b|\bPatlent\b)[^\n]*?)(?=\b[A-Z]{2}-\d{2}-\d{4}\b)', '', p, flags=re.IGNORECASE | re.MULTILINE)
             # Clean blue ink handwriting OCR noise on summary lines
             p = re.sub(r'[\{\}\(\)\!]+|\b(?:CCH|sl|o)\b', '', p)
             p = re.sub(r'\b[T]\b\s+(?=OTHER CHARGES)', '', p)
@@ -411,7 +426,11 @@ Identify the headers of the table columns in the text:
    - Map "Quantity" to Qty.
    - Map "Price" to Price.
    - Map "NetAmt" to Amount.
-3. Verify that for every extracted item: Price * Quantity is mathematically close to NetAmt. If not, check if you misaligned the columns!
+3. If the table columns only have [Particulars Quantity Amount] or similar (meaning there is NO unit price/rate column printed):
+   - Map "Quantity" to Quantity/Qty.
+   - Map "NetAmt" to Amount (row total).
+   - Map "Price" to NetAmt / Quantity (calculate this unit price mathematically!).
+4. Verify that for every extracted item: Price * Quantity is mathematically close to NetAmt. If not, check if you misaligned the columns!
 
 OUTPUT FORMAT — respond with ONLY this JSON structure, nothing else:
 {{
@@ -427,6 +446,10 @@ RULES:
 - Do NOT extract patient metadata (Name, Age, Sex, Address, Dates, etc.) as line items.
 - Extract the complete item description exactly as it appears. Do not truncate.
 - All numeric fields must be plain numbers (no $ signs, no commas).
+- Do NOT collapse or deduplicate repeating items. If the document has multiple identical lines (for example, multiple identical 'Injection' or 'Ward Charge' rows), you must output each one as a separate distinct item in the JSON list. Never skip or aggregate repeating charges.
+- Do NOT extract category subtotal lines or summary rows (such as lines ending with 'Sub Total: ...' or generic rows named 'Order Item' that just repeat a section sum). Extract ONLY individual itemized charges.
+- Do NOT extract Services Accounting Codes (SAC) or HSN codes (typically formatted as "SAC:XXXXXX" or "HSN:XXXXXX" or as 6-digit integers starting with 99) as prices or line items. They are tax classifications, NOT financial amounts.
+- You MUST use the EXACT numeric values printed in the document. Never change, guess, or synthesize numbers. If the text says 4,620.00, you must output 4620.00. Outputting a slightly different number (like 4626.00 or 514.00) is a critical error and will cause the item to be discarded.
 {ocr_instructions}
 
 DO NOT write any sentence or paragraph. START your response with the {{ character.
@@ -466,7 +489,7 @@ def clean_json_response(raw: str) -> str:
     return raw
 
 
-def _call_ollama(messages: list, label: str) -> Optional[str]:
+def _call_llm(messages: list, label: str) -> Optional[str]:
     # Schema definition for strict JSON output enforcement
     schema_def = {
         "type": "OBJECT",
@@ -642,6 +665,66 @@ def get_case_insensitive(d: dict, keys: list[str], default=None):
     return default
 
 
+def detect_page_headers(page_text: str) -> list[str]:
+    text_lower = page_text.lower()
+    
+    # Check for the 8-column header (Description + Cpt + Code + Discount)
+    if "description" in text_lower and "cpt" in text_lower and "code" in text_lower and "discount" in text_lower:
+        sl_key = "SI#" if "si#" in text_lower else "Sl#"
+        return [sl_key, "Description", "Cpt Code", "Date", "Qty", "Rate", "Gross Amount", "Discount"]
+        
+    # Default 4-column header
+    return ["Particulars", "Quantity", "Price", "NetAmt"]
+
+
+def denormalize_item(item: dict, headers: list[str]) -> dict:
+    denorm = {}
+    for h in headers:
+        h_lower = h.lower()
+        if h_lower in ["sl#", "si#"]:
+            val = get_case_insensitive(item, ["sl#", "si#"], "")
+            denorm[h] = val
+        elif h_lower == "description":
+            denorm[h] = item.get("Particulars", "")
+        elif h_lower == "cpt code":
+            denorm[h] = get_case_insensitive(item, ["cpt code", "cptcode"], "")
+        elif h_lower == "date":
+            denorm[h] = get_case_insensitive(item, ["date"], "")
+        elif h_lower == "qty":
+            denorm[h] = item.get("Quantity", 1.0)
+        elif h_lower == "rate":
+            denorm[h] = item.get("Price", 0.0)
+        elif h_lower == "gross amount":
+            denorm[h] = item.get("NetAmt", 0.0)
+        elif h_lower == "discount":
+            denorm[h] = get_case_insensitive(item, ["discount"], 0.0)
+        elif h_lower == "particulars":
+            denorm[h] = item.get("Particulars", "")
+        elif h_lower == "quantity":
+            denorm[h] = item.get("Quantity", 1.0)
+        elif h_lower == "price":
+            denorm[h] = item.get("Price", 0.0)
+        elif h_lower == "netamt":
+            denorm[h] = item.get("NetAmt", 0.0)
+        else:
+            denorm[h] = item.get(h, "")
+            
+    # Clean numeric fields
+    for h in headers:
+        if h in ["Qty", "Quantity"]:
+            try:
+                denorm[h] = float(str(denorm[h]).replace(",", "").strip())
+            except ValueError:
+                denorm[h] = 1.0
+        elif h in ["Rate", "Price", "Gross Amount", "NetAmt", "Discount"]:
+            try:
+                denorm[h] = float(str(denorm[h]).replace(",", "").strip())
+            except ValueError:
+                denorm[h] = 0.0
+                
+    return denorm
+
+
 def normalize_item(item: dict) -> dict:
     if not isinstance(item, dict):
         return {}
@@ -690,15 +773,50 @@ def normalize_item(item: dict) -> dict:
         price = 0.0
         net = 0.0
         
-    return {
-        "Particulars": particulars,
-        "Quantity": qty,
-        "Price": price,
-        "NetAmt": net
-    }
+    # Keep ALL other keys (e.g. Sl#, Date, Discount, Cpt Code) in the normalized dict!
+    normalized = {}
+    for k, v in item.items():
+        k_lower = k.lower()
+        if k_lower not in ["particulars", "description", "name", "item", "particular", "text",
+                           "quantity", "qty", "count", "no",
+                           "price", "rate", "charges", "unit price", "unitprice",
+                           "netamt", "amount", "gross amount", "netamount", "total", "charges total"]:
+            normalized[k] = v
+            
+    normalized["Particulars"] = particulars
+    normalized["Quantity"] = qty
+    normalized["Price"] = price
+    normalized["NetAmt"] = net
+    
+    return normalized
 
 
-def fix_ocr_json_math(items):
+def find_matching_line(particulars, page_text):
+    if not particulars or not page_text:
+        return ""
+    part_lower = particulars.lower().strip()
+    best_line = ""
+    best_score = 0.0
+    
+    import difflib
+    for line in page_text.splitlines():
+        line_lower = line.lower().strip()
+        if not line_lower:
+            continue
+        if part_lower in line_lower:
+            return line
+            
+        ratio = difflib.SequenceMatcher(None, part_lower, line_lower).ratio()
+        if ratio > best_score:
+            best_score = ratio
+            best_line = line
+            
+    if best_score >= 0.5:
+        return best_line
+    return ""
+
+
+def fix_ocr_json_math(items, page_text=""):
     """
     Given a list of item dictionaries, ensure that Qty * Price == NetAmt.
     If they don't match, recalculate NetAmt based on Qty and Price.
@@ -731,13 +849,18 @@ def fix_ocr_json_math(items):
                 c_has_id = bool(re.match(r'^\[.*?\]', c_part)) or c_is_tax
                 n_has_id = bool(re.match(r'^\[.*?\]', n_part)) or n_is_tax
                 
+                is_substring = (n_part.lower() in c_part.lower()) or (c_part.lower() in n_part.lower())
+                is_fragment = len(n_part) < 15 or not n_part[0].isupper() or n_part[0] in "#([{"
+                
                 if c_has_id and n_has_id:
                     should_merge = False
                 elif c_part == n_part:
                     # Do not merge identical consecutive items (they are distinct billing entries)
                     should_merge = False
-                else:
+                elif is_substring or is_fragment:
                     should_merge = True
+                else:
+                    should_merge = False
 
                 if should_merge:
                     curr['Particulars'] = (c_part + " " + n_part).strip()
@@ -753,6 +876,39 @@ def fix_ocr_json_math(items):
         qty = item.get("Quantity", 1.0)
         price = item.get("Price", 0.0)
         net = item.get("NetAmt", 0.0)
+        
+        # Line-level raw text number check
+        if page_text:
+            line = find_matching_line(item.get("Particulars"), page_text)
+            if line:
+                line_no_commas = line.replace(",", "")
+                net_str_dec = f"{net:.2f}"
+                net_str_int = str(int(net))
+                price_str_dec = f"{price:.2f}"
+                price_str_int = str(int(price))
+                
+                net_exists = (net_str_dec in line_no_commas or net_str_int in line_no_commas) if net > 0 else True
+                price_exists = (price_str_dec in line_no_commas or price_str_int in line_no_commas) if price > 0 else True
+                
+                # Check for column misalignment: Qty > 1, Price and NetAmt are different,
+                # but only Price (which represents NetAmt) exists in the text.
+                if qty > 1.0 and abs(price - net) > 0.05:
+                    if price_exists and not net_exists:
+                        log.info("  [MATH RECONCILIATION] Swapping Price %.2f to NetAmt because NetAmt %.2f was not found in text line: '%s'", price, net, line.strip())
+                        item["NetAmt"] = price
+                        item["Price"] = round(price / qty, 2)
+                        price = item["Price"]
+                        net = item["NetAmt"]
+                    elif net_exists and not price_exists:
+                        item["Price"] = round(net / qty, 2)
+                        price = item["Price"]
+        
+        # If Price equals NetAmt but Quantity is greater than 1,
+        # it is highly likely that Price was misaligned to the total Amount column
+        # and the true unit price should be NetAmt / Quantity.
+        if qty > 1.0 and price == net and price > 0:
+            item["Price"] = round(net / qty, 2)
+            price = item["Price"]
         
         expected_net = round(qty * price, 2)
         if abs(expected_net - net) > 0.05:
@@ -834,20 +990,95 @@ def _extract_page(page_text: str, page_num: int, max_retries: int = 5) -> dict:
     return _extract_page_single(page_text, page_num, max_retries)
 
 
+def is_summary_or_category_item(name: str) -> bool:
+    name_clean = re.sub(r'[^a-zA-Z0-9]', '', name).lower()
+    
+    # 1. Filter out actual final totals/footers
+    total_keys = {"total", "subtotal", "grandtotal", "grossamount", "netamount", "amountpayable"}
+    if name_clean in total_keys:
+        return True
+        
+    # 2. General category/subtotal indicators (avoiding matching "total" inside product names like "STERIPORT TOTAL")
+    if name_clean == "total" or re.search(r'\b(sub\s*total|grand\s*total|gross\s*total|category\s*total|dept\s*total|group\s*total|subtotal|summary)\b', name.lower()):
+        return True
+            
+    # Match intermediate pharmacy bills only if they explicitly contain "bill"/"bil"/"bitl"/"ein"
+    # and a long alphanumeric code containing at least one digit
+    if re.search(r'\b(bill|bil|bitl|ein)\b', name.lower()):
+        if re.search(r'\b[a-zA-Z0-9]{5,}\b', name) and re.search(r'\d', name):
+            return True
+            
+    return False
+
+
 def _extract_page_single(page_text: str, page_num: int, max_retries: int = 5) -> dict:
     if not page_text.strip():
         return {"page_number": page_num, "items": []}
         
+    headers = detect_page_headers(page_text)
+    keys_instruction = "\n".join(f'- "{h}": Extract the column value for {h}.' for h in headers)
+    
+    sample_item = {}
+    for h in headers:
+        if h in ["SI#", "Sl#"]:
+            sample_item[h] = "1"
+        elif h in ["Qty", "Quantity"]:
+            sample_item[h] = 1.0
+        elif h in ["Rate", "Price"]:
+            sample_item[h] = 150.0
+        elif h in ["Gross Amount", "NetAmt"]:
+            sample_item[h] = 150.0
+        elif h == "Discount":
+            sample_item[h] = 0.0
+        elif h == "Date":
+            sample_item[h] = "13/06/2026"
+        elif h == "Cpt Code":
+            sample_item[h] = ""
+        else:
+            sample_item[h] = "Item Name"
+            
+    sample_str = json.dumps(sample_item)
+    
     ocr_instructions = ""
+    user_prompt = f"""Extract every single financial/billing line item from the invoice/receipt text below.
+
+For each line item, extract the data and map it EXACTLY to the following JSON keys:
+{keys_instruction}
+
+OUTPUT FORMAT — respond with ONLY this JSON structure, nothing else:
+{{
+  "page_number": {page_num},
+  "items": [
+    {sample_str}
+  ]
+}}
+
+RULES:
+- Only extract FINANCIAL billing line items. If a page or a list contains NO financial prices (e.g. a medical report, clinical notes, patient details), IGNORE IT completely and return an empty list for "items".
+- Do NOT extract patient metadata (Name, Age, Sex, Address, Dates, etc.) as line items.
+- Extract the complete item description exactly as it appears. Do not truncate.
+- All numeric fields must be plain numbers (no $ signs, no commas).
+- Do NOT collapse or deduplicate repeating items. If the document has multiple identical lines, you must output each one as a separate distinct item in the JSON list. Never skip or aggregate repeating charges.
+- Do NOT extract category subtotal lines or summary rows (such as lines ending with 'Sub Total: ...'). Extract ONLY individual itemized charges.
+- Do NOT extract Services Accounting Codes (SAC) or HSN codes (typically formatted as "SAC:XXXXXX" or "HSN:XXXXXX" or as 6-digit integers starting with 99) as prices or line items. They are tax classifications, NOT financial amounts.
+- You MUST use the EXACT numeric values printed in the document. Never change, guess, or synthesize numbers. If the text says 4,620.00, you must output 4620.00. Outputting a slightly different number is a critical error and will cause the item to be discarded.
+{ocr_instructions}
+
+DO NOT write any sentence or paragraph. START your response with the {{ character.
+
+--- INVOICE TEXT ---
+{page_text}
+--- END ---
+"""
+
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT % page_num},
-        {"role": "user",   "content": USER_PROMPT_TEMPLATE.format(
-            page_num=page_num, raw_text=page_text, ocr_instructions=ocr_instructions)},
+        {"role": "user",   "content": user_prompt},
     ]
     
     label = f"page {page_num}"
     for attempt in range(1, max_retries + 1):
-        reply = _call_ollama(messages, f"{label} attempt {attempt}")
+        reply = _call_llm(messages, f"{label} attempt {attempt}")
         if not reply:
             log.warning(f"  [LLM] Ollama returned no reply on attempt {attempt}. Retrying...")
             import time
@@ -857,12 +1088,47 @@ def _extract_page_single(page_text: str, page_num: int, max_retries: int = 5) ->
         result = _parse_reply(reply, page_num)
         if result is not None:
             items = result.get("items") or []
-            items = fix_ocr_json_math(items)
+            items = fix_ocr_json_math(items, page_text)
             
-            # Post-processing: Filter out hallucinated examples and metadata
+            # Post-processing: Filter out category/summary rows and duplicates
             filtered_items = []
             for item in items:
                 if not isinstance(item, dict):
+                    continue
+                part = item.get("Particulars", "")
+                if is_summary_or_category_item(part):
+                    log.info("  [CATEGORY FILTER] Filtering out summary/category item: %s", part)
+                    continue
+                
+                # Failsafe check to filter out items without any letters (e.g. subtotals like "2260.00" or empty)
+                if not re.search(r'[a-zA-Z]', part):
+                    log.info("  [LETTER FILTER] Filtering out item with no alphabetic characters: %s", part)
+                    continue
+                
+                # Failsafe check to filter out leftover header names and SAC/HSN code patterns
+                part_upper = part.upper().strip()
+                if part_upper in ["ORDER ITEM", "SL# DESCRIPTION DATE QTY RATE GROSS AMOUNT DISCOUNT", "PARTICULARS QTY PRICE NETAMT"]:
+                    continue
+                if "SAC:" in part_upper or "HSN:" in part_upper:
+                    continue
+                
+                # Filter out general SAC codes starting with 99 (6-digit integer check)
+                price_val = item.get("Price")
+                net_val = item.get("NetAmt")
+                is_sac = False
+                for val in [price_val, net_val]:
+                    if val is not None and val != 0 and val != 0.0:
+                        try:
+                            f_val = float(str(val).replace(",", "").strip())
+                            if f_val.is_integer():
+                                i_val = int(f_val)
+                                if 990000 <= i_val <= 999999:
+                                    is_sac = True
+                                    break
+                        except ValueError:
+                            pass
+                if is_sac:
+                    log.info("  [SAC FILTER] Filtering out item '%s' because its price/netamt (%s/%s) matches an SAC code pattern.", part, price_val, net_val)
                     continue
                 vals = str(item.values()).lower()
                 if "fake_" in vals or "xyz123" in vals or "999.99" in vals:
@@ -986,6 +1252,34 @@ def _extract_page_single(page_text: str, page_num: int, max_retries: int = 5) ->
                 if not is_real:
                     continue
                     
+                # Ground Truth Price/NetAmt Verification:
+                # Ensure the extracted price or net amount (if > 2.0) physically exists in the text.
+                has_valid_price = False
+                price_val = item.get("Price")
+                net_val = item.get("NetAmt")
+                
+                has_any_val = False
+                for v in [price_val, net_val]:
+                    if v is not None and v != 0 and v != 0.0 and str(v).lower() != "null":
+                        has_any_val = True
+                        try:
+                            f_val = float(str(v).replace(",", ""))
+                            if f_val <= 2.0:
+                                has_valid_price = True
+                                break
+                            val_str = f"{f_val:.2f}"
+                            val_str_no_dec = str(int(f_val))
+                            val_str_one_dec = f"{f_val:.1f}"
+                            if val_str in raw_text_no_commas or val_str_no_dec in raw_text_no_commas or val_str_one_dec in raw_text_no_commas:
+                                has_valid_price = True
+                                break
+                        except ValueError:
+                            pass
+                
+                if has_any_val and not has_valid_price:
+                    log.info(f"  [HALLUCINATION FILTER] Discarding item '{item.get('Particulars')}' because its price/netamt ({price_val}/{net_val}) was not found in the raw text.")
+                    continue
+                    
                 filtered_items.append(item)
             
             result["items"] = filtered_items
@@ -1050,7 +1344,39 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
         pages_results.append(clean_res)
 
     # ── Summary Page Deduplication Check ─────────────────────────────────────
+    def is_summary_page(items):
+        if not items or len(items) < 3:
+            return False
+            
+        category_names = {
+            "bedcharges", "pathologyinvestigation", "doctorfees", "procedures",
+            "othercharges", "drugsandconsumables", "pharmacysalesreturn", "particularscharges",
+            "administrativecharges", "admission", "admissioncharges", "dieteticsdepartment",
+            "diet", "doctorsvisitcharge", "laboratory", "nursingcharges",
+            "procedureservicecharge", "radiology", "pharmacydrugs", "materials",
+            "implantcharges", "theatrecharges", "surgeonfee", "anasthetistsfees",
+            "surgicalsupportfees", "cssdcharges", "miscellaneous"
+        }
+        
+        count = 0
+        for item in items:
+            part_clean = re.sub(r'[^a-zA-Z0-9]', '', str(item.get("Particulars", ""))).lower()
+            if part_clean in category_names:
+                count += 1
+                
+        return (count / len(items)) >= 0.60
+
     def remove_summary_pages(pages_list):
+        # 1. Identify and drop pages that are high-level category summary bills
+        non_summary_pages = []
+        for p in pages_list:
+            p_items = p.get("items", [])
+            if is_summary_page(p_items):
+                log.info("  [DEDUPLICATION] Page %d is identified as a summary page. Dropping Page %d.", p["page_number"], p["page_number"])
+            else:
+                non_summary_pages.append(p)
+                
+        pages_list = non_summary_pages
         page_sums = []
         for p in pages_list:
             p_sum = 0.0
@@ -1062,6 +1388,21 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
         if n_pages <= 1:
             return pages_list
             
+        # 2. Page-to-Page comparison: if Page A matches Page B sum, and Page A has fewer items, drop Page A
+        for i in range(n_pages):
+            for j in range(n_pages):
+                if i != j:
+                    s_i = page_sums[i]
+                    s_j = page_sums[j]
+                    if s_i > 0 and abs(s_i - s_j) < max(10.0, s_i * 0.05):
+                        num_i = len(pages_list[i].get("items", []))
+                        num_j = len(pages_list[j].get("items", []))
+                        if num_i < num_j:
+                            log.info("  [DEDUPLICATION] Page %d is identified as a summary of Page %d (sum %.2f matches sum %.2f). Dropping Page %d.", pages_list[i]["page_number"], pages_list[j]["page_number"], s_i, s_j, pages_list[i]["page_number"])
+                            pages_list_copy = [p for k, p in enumerate(pages_list) if k != i]
+                            return remove_summary_pages(pages_list_copy)
+            
+        # 3. Page-to-Others comparison: if Page K matches sum of all other pages combined, and Page K has fewer items, drop Page K
         for k in range(n_pages):
             s_k = page_sums[k]
             if s_k <= 0:
@@ -1071,7 +1412,7 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
             num_items_k = len(pages_list[k].get("items", []))
             
             # If s_k matches sum of other pages, and has fewer items, drop page k (summary page)
-            if num_items_k < other_items_count and abs(s_k - other_sum) < max(10.0, s_k * 0.002):
+            if num_items_k < other_items_count and abs(s_k - other_sum) < max(10.0, s_k * 0.05):
                 log.info("  [DEDUPLICATION] Page %d is identified as a summary page (sum %.2f matches sum of other pages %.2f). Dropping Page %d to prevent double-counting.", pages_list[k]["page_number"], s_k, other_sum, pages_list[k]["page_number"])
                 pages_list_copy = [p for i, p in enumerate(pages_list) if i != k]
                 return remove_summary_pages(pages_list_copy)
@@ -1114,7 +1455,7 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
             re.IGNORECASE,
         )
         total_matches = re.findall(
-            r"(?:grand\s+total|net\s+payable|total\s+claimed|total\s+amount|amount\s+payable|net\s+amount)[\s:=-]+(?:rs\.?|inr)?\s*([\d,]+\.\d{2})",
+            r"(?:grand\s+total|gross\s+total|net\s+payable|total\s+claimed|total\s+amount|amount\s+payable|net\s+amount)[\s:=-]+(?:rs\.?|inr)?\s*([\d,]+\.\d{2})",
             doc_full_text,
             re.IGNORECASE,
         )
@@ -1133,15 +1474,19 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
             # If extracted sum is larger than the target total, check if we included tax/subtotal lines by mistake
             if diff < -2.0:
                 log.info("  [RECONCILIATION] Extracted sum (%.2f) exceeds target total (%.2f). Checking for duplicate totals/taxes...", extracted_sum, target_total)
+                raw_subtotals = [float(m.group(1)) for m in re.finditer(r'Sub\s*Total\s*:\s*(\d+(?:\.\d{2})?)', doc_full_text, re.IGNORECASE)]
                 for p in pages_results:
                     filtered = []
                     for item in p.get("items", []):
-                        part = item.get("Particulars", "").upper()
-                        # If a line item describes "TOTAL" or "CGST/SGST/TAX" and matches the tax or subtotal value, filter it
-                        is_total_line = any(k in part for k in ["SUBTOTAL", "GRAND TOTAL", "NET PAYABLE", "TOTAL AMOUNT"])
-                        is_tax_line = any(k in part for k in ["CGST", "SGST", "IGST", "TAX"]) and abs(item.get("NetAmt", 0.0) - tax_val) < 2.0
+                        part = item.get("Particulars", "").upper().strip()
+                        net_val = round(item.get("NetAmt", 0.0), 2)
                         
-                        if is_total_line or is_tax_line:
+                        # Filter out totals, taxes, and subtotal rows
+                        is_total_line = any(k in part for k in ["SUBTOTAL", "SUB TOTAL", "GRAND TOTAL", "NET PAYABLE", "TOTAL AMOUNT"])
+                        is_subtotal_match = any(abs(net_val - st_val) < 0.1 for st_val in raw_subtotals) and part in ["ORDER ITEM", "SUB TOTAL", "SUBTOTAL"]
+                        is_tax_line = any(k in part for k in ["CGST", "SGST", "IGST", "TAX"]) and abs(net_val - tax_val) < 2.0
+                        
+                        if is_total_line or is_subtotal_match or is_tax_line:
                             log.info("  [RECONCILIATION] Filtering out non-item line: %s (Amt: %.2f)", item.get("Particulars"), item.get("NetAmt"))
                             extracted_sum -= item.get("NetAmt", 0.0)
                             continue
@@ -1158,7 +1503,7 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
                         {"role": "system", "content": "You are a hospital billing audit AI."},
                         {"role": "user", "content": f"Invoice text:\n{doc_full_text[:5000]}\n\nExtracted items total {extracted_sum}, but document footer total is {target_total}. Find the missing item costing approximately {diff}. Return ONLY JSON format: {{\"items\": [{{\"Particulars\": \"missing item\", \"Quantity\": 1, \"Price\": {diff}, \"NetAmt\": {diff}}}]}}"}
                     ]
-                    rec_reply = _call_ollama(rec_prompt, "self-correction recovery")
+                    rec_reply = _call_llm(rec_prompt, "self-correction recovery")
                     if rec_reply:
                         rec_clean = _parse_reply(rec_reply, 99)
                         if rec_clean and rec_clean.get("items"):
@@ -1168,48 +1513,33 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
                             norm_recovered = [normalize_item(it) for it in recovered]
                             pages_results[-1]["items"].extend(norm_recovered)
                             total_items += len(norm_recovered)
+                            # Update extracted_sum and diff after recovery
+                            for r_item in norm_recovered:
+                                extracted_sum += r_item.get("NetAmt", 0.0)
+                            extracted_sum = round(extracted_sum, 2)
+                            diff = round(target_total - extracted_sum, 2)
+                            if abs(diff) <= 2.0:
+                                log.info("  [RECONCILIATION] Balanced after self-correction! Extracted sum (%.2f) matches Invoice Total (%.2f).", extracted_sum, target_total)
             else:
                 log.info("  [RECONCILIATION] 100%% Balanced! Extracted sum (%.2f) matches Invoice Total (%.2f).", extracted_sum, target_total)
     except Exception as e:
         log.warning("  [RECONCILIATION] Error during verification loop: %s", e)
 
-    # ── Document Metadata Extraction ─────────────────────────────────────────
-    vendor_name = ""
-    invoice_number = ""
-    invoice_date = ""
-    currency = "INR"
-
-    first_page_text = pages_text[0] if pages_text else ""
-    date_m = re.search(r'\b(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}|\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2})\b', first_page_text)
-    if date_m:
-        invoice_date = date_m.group(1)
-    inv_m = re.search(r'(?:Bill|Invoice|Receipt|Bill No|Inv No|MRD No|Visit Code)[\s:#=-]+([A-Z0-9\-\/]+)', first_page_text, re.IGNORECASE)
-    if inv_m:
-        invoice_number = inv_m.group(1)
-    for line in first_page_text.splitlines()[:8]:
-        line_clean = line.strip()
-        if len(line_clean) > 4 and not re.match(r'^\d', line_clean) and not any(kw in line_clean.lower() for kw in ["patient", "mrd", "visit", "date", "bill"]):
-            vendor_name = line_clean
-            break
-
-    summary_block = {
-        "extracted_subtotal": round(extracted_sum, 2),
-        "declared_subtotal": round(subtotal_val, 2) if subtotal_val > 0 else round(extracted_sum, 2),
-        "total_tax": round(tax_val, 2),
-        "total_discount": round(discount_val, 2),
-        "declared_grand_total": round(target_total, 2) if target_total > 0 else round(extracted_sum, 2),
-        "reconciliation_status": "BALANCED" if (target_total == 0 or abs(target_total - extracted_sum) <= 2.0) else f"DISCREPANCY_{round(target_total - extracted_sum, 2)}"
-    }
+    # Denormalize items back to original keys matching the page columns
+    for p in pages_results:
+        page_num = p["page_number"]
+        p_text = pages_text[page_num - 1]
+        headers = detect_page_headers(p_text)
+        
+        denorm_items = []
+        for item in p.get("items", []):
+            denorm_items.append(denormalize_item(item, headers))
+        p["items"] = denorm_items
 
     return {
         "document_name": filename,
-        "vendor_name": vendor_name,
-        "invoice_number": invoice_number,
-        "invoice_date": invoice_date,
-        "currency": currency,
         "total_pages": total_pages,
         "total_items": total_items,
-        "summary": summary_block,
         "pages": pages_results
     }
 
@@ -1316,6 +1646,129 @@ def append_to_master_excel(data: dict, master_path: Path) -> None:
         pass
 
 
+def stitch_cross_page_splits(pages_text: list[str]) -> list[str]:
+    header_keywords = [
+        r"manipal hospital",
+        r"survey no",
+        r"cin:",
+        r"inpatient interim bill",
+        r"date wise itemised bill",
+        r"name\s*:\s*\w+",
+        r"age/sex\s*:",
+        r"inpatient no\s*:",
+        r"reg no\s*:",
+        r"sl\.\s*particulars",
+        r"order item\s+qty",
+        r"location\s*:",
+    ]
+    footer_keywords = [
+        r"page\s+\d+\s+of\s+\d+",
+        r"\b\d+\s+of\s+\d+\b",
+        r"gross total\s*:",
+        r"grand total\s*:",
+        r"sub total\s*:",
+    ]
+    
+    def is_header_or_footer(line: str) -> bool:
+        line_lower = line.lower().strip()
+        if not line_lower:
+            return True
+        if re.match(r'^[\s\-_=_]*$', line_lower):
+            return True
+        for pat in header_keywords + footer_keywords:
+            if re.search(pat, line_lower):
+                return True
+        return False
+
+    def ends_with_price_not_date(line: str) -> bool:
+        line_clean = line.strip()
+        if not line_clean:
+            return False
+        # Exclude dates / timestamps
+        if re.search(r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b', line_clean):
+            return False
+        if re.search(r'\b\d{2}:\d{2}\s*(?:AM|PM)?\b', line_clean):
+            return False
+        return bool(re.search(r'\b\d+(?:\.\d{2})?\s*$', line_clean))
+        
+    stitched_pages = list(pages_text)
+    
+    for i in range(len(stitched_pages) - 1):
+        curr_text = stitched_pages[i]
+        next_text = stitched_pages[i+1]
+        
+        curr_lines = curr_text.splitlines()
+        next_lines = next_text.splitlines()
+        
+        curr_data_idx = -1
+        for idx in range(len(curr_lines) - 1, -1, -1):
+            if not is_header_or_footer(curr_lines[idx]):
+                curr_data_idx = idx
+                break
+                
+        if curr_data_idx == -1:
+            continue
+            
+        curr_last_line = curr_lines[curr_data_idx].strip()
+        has_price_curr = ends_with_price_not_date(curr_last_line)
+        
+        # Check if the split happened
+        if not has_price_curr:
+            # We want to identify if the next page starts with pricing/date details for the split item
+            lines_to_move = []
+            next_data_idx = -1
+            
+            # Find the first data line on the next page
+            for idx in range(len(next_lines)):
+                if not is_header_or_footer(next_lines[idx]):
+                    next_data_idx = idx
+                    break
+                    
+            if next_data_idx == -1:
+                continue
+                
+            # Collect all lines from the top of the next page that belong to the split item.
+            # This includes lines that are dates, prices, locations, or short numbers,
+            # but stops when we hit a line that has a standard description (letters > 4).
+            idx = next_data_idx
+            while idx < len(next_lines):
+                if is_header_or_footer(next_lines[idx]):
+                    idx += 1
+                    continue
+                    
+                line_to_check = next_lines[idx].strip()
+                
+                # Check if it has a price or is a date or is just numbers/locations
+                has_price = ends_with_price_not_date(line_to_check)
+                is_date = bool(re.search(r'\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b', line_to_check))
+                
+                clean_text = re.sub(r'\b(?:charged|packed|returned|location|pharmacy|ward|bed|mvd|mvb|c\s+wing|d\s+wing)\b', '', line_to_check, flags=re.IGNORECASE)
+                clean_text = re.sub(r'\d{1,2}[/-]\d{1,2}[/-]\d{2,4}', '', clean_text)
+                clean_text = re.sub(r'[^a-zA-Z]', '', clean_text)
+                is_price_only = len(clean_text) < 4
+                
+                if has_price or is_date or is_price_only:
+                    lines_to_move.append((idx, next_lines[idx]))
+                    idx += 1
+                else:
+                    break
+            
+            if lines_to_move:
+                # Log what we are moving
+                for orig_idx, line_val in lines_to_move:
+                    log.info(f"  [STITCHING] Page split detected! Moving line '{line_val.strip()}' from top of Page {i+2} to bottom of Page {i+1}")
+                    curr_lines.insert(curr_data_idx + 1, line_val)
+                    curr_data_idx += 1
+                    
+                # Remove moved lines from the next page in reverse order to keep indices correct
+                for orig_idx, _ in reversed(lines_to_move):
+                    next_lines.pop(orig_idx)
+                    
+                stitched_pages[i] = "\n".join(curr_lines)
+                stitched_pages[i+1] = "\n".join(next_lines)
+    return stitched_pages
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  MAIN PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1328,6 +1781,8 @@ def process_file(file_path: Path) -> None:
     if not pages_text:
         log.warning("  Skipping %s — no text could be extracted.", file_path.name)
         return
+
+    pages_text = stitch_cross_page_splits(pages_text)
 
     result = extract_with_llm(pages_text, file_path.name)
 
