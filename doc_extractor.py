@@ -168,6 +168,172 @@ def format_ocr_result(result) -> str:
         
     return "\n".join(text_lines)
 
+def xycut_reading_order(words: list[dict], page_width: float = 0, page_height: float = 0) -> list[dict]:
+    """
+    Enhanced XY-Cut++ reading order algorithm.
+    Recursively segments the page into layout blocks using X and Y projection gaps,
+    and returns words ordered top-to-bottom, left-to-right within structural hierarchy.
+    """
+    if not words:
+        return []
+    if len(words) <= 1:
+        return words
+
+    def get_bbox(w):
+        x0 = float(w.get("x0", 0))
+        x1 = float(w.get("x1", x0))
+        y0 = float(w.get("top", w.get("y0", 0)))
+        y1 = float(w.get("bottom", w.get("y1", y0)))
+        return x0, y0, x1, y1
+
+    min_x = min(get_bbox(w)[0] for w in words)
+    max_x = max(get_bbox(w)[2] for w in words)
+    min_y = min(get_bbox(w)[1] for w in words)
+    max_y = max(get_bbox(w)[3] for w in words)
+    
+    region_width = max_x - min_x
+    region_height = max_y - min_y
+    
+    if region_height < 15 or region_width < 15 or len(words) <= 3:
+        def sort_key(w):
+            x0, y0, x1, y1 = get_bbox(w)
+            return (round((y0 + y1) / 2.0 / 5.0) * 5.0, x0)
+        return sorted(words, key=sort_key)
+
+    def cut_recursive(sub_words: list[dict], x_min: float, y_min: float, x_max: float, y_max: float) -> list[dict]:
+        if len(sub_words) <= 2:
+            return sorted(sub_words, key=lambda w: (round((get_bbox(w)[1] + get_bbox(w)[3]) / 2.0 / 5.0) * 5.0, get_bbox(w)[0]))
+
+        w_width = max(1.0, x_max - x_min)
+        w_height = max(1.0, y_max - y_min)
+
+        y_intervals = []
+        for w in sub_words:
+            bx0, by0, bx1, by1 = get_bbox(w)
+            y_intervals.append((by0, by1, w))
+        y_intervals.sort(key=lambda item: item[0])
+
+        best_y_gap = 0.0
+        best_y_cut = None
+        current_y_max = y_intervals[0][1]
+        for i in range(len(y_intervals) - 1):
+            if y_intervals[i][1] > current_y_max:
+                current_y_max = y_intervals[i][1]
+            next_y_min = y_intervals[i + 1][0]
+            if next_y_min > current_y_max:
+                gap = next_y_min - current_y_max
+                if gap > best_y_gap:
+                    best_y_gap = gap
+                    best_y_cut = (current_y_max + next_y_min) / 2.0
+
+        x_intervals = []
+        for w in sub_words:
+            bx0, by0, bx1, by1 = get_bbox(w)
+            x_intervals.append((bx0, bx1, w))
+        x_intervals.sort(key=lambda item: item[0])
+
+        best_x_gap = 0.0
+        best_x_cut = None
+        current_x_max = x_intervals[0][1]
+        for i in range(len(x_intervals) - 1):
+            if x_intervals[i][1] > current_x_max:
+                current_x_max = x_intervals[i][1]
+            next_x_min = x_intervals[i + 1][0]
+            if next_x_min > current_x_max:
+                gap = next_x_min - current_x_max
+                if gap > best_x_gap:
+                    best_x_gap = gap
+                    best_x_cut = (current_x_max + next_x_min) / 2.0
+
+        y_threshold = max(3.0, w_height * 0.008)
+        x_threshold = max(12.0, w_width * 0.02)
+
+        has_y_cut = best_y_cut is not None and best_y_gap >= y_threshold
+        has_x_cut = best_x_cut is not None and best_x_gap >= x_threshold
+
+        if not has_y_cut and not has_x_cut:
+            def base_sort_key(w):
+                bx0, by0, bx1, by1 = get_bbox(w)
+                row_y = round((by0 + by1) / 2.0 / 6.0) * 6.0
+                return (row_y, bx0)
+            return sorted(sub_words, key=base_sort_key)
+
+        if has_y_cut:
+            top_words = [w for w in sub_words if (get_bbox(w)[1] + get_bbox(w)[3])/2.0 < best_y_cut]
+            bot_words = [w for w in sub_words if (get_bbox(w)[1] + get_bbox(w)[3])/2.0 >= best_y_cut]
+            if top_words and bot_words:
+                return cut_recursive(top_words, x_min, y_min, x_max, best_y_cut) + cut_recursive(bot_words, x_min, best_y_cut, x_max, y_max)
+        if has_x_cut:
+            left_words = [w for w in sub_words if (get_bbox(w)[0] + get_bbox(w)[2])/2.0 < best_x_cut]
+            right_words = [w for w in sub_words if (get_bbox(w)[0] + get_bbox(w)[2])/2.0 >= best_x_cut]
+            if left_words and right_words:
+                return cut_recursive(left_words, x_min, y_min, best_x_cut, y_max) + cut_recursive(right_words, best_x_cut, y_min, x_max, y_max)
+
+        return sorted(sub_words, key=lambda w: (round((get_bbox(w)[1] + get_bbox(w)[3]) / 2.0 / 6.0) * 6.0, get_bbox(w)[0]))
+
+    return cut_recursive(words, min_x, min_y, max_x, max_y)
+
+def extract_text_with_xycut(page) -> str:
+    """
+    Extracts text from a pdfplumber page using word bounding boxes and the XY-Cut++ algorithm.
+    Groups ordered words into lines and preserves spatial spacing.
+    """
+    try:
+        words = page.extract_words()
+        if not words:
+            return ""
+        
+        ordered_words = xycut_reading_order(words, getattr(page, "width", 0), getattr(page, "height", 0))
+        
+        items = []
+        for w in ordered_words:
+            x0 = float(w.get("x0", 0))
+            x1 = float(w.get("x1", x0))
+            y0 = float(w.get("top", w.get("y0", 0)))
+            y1 = float(w.get("bottom", w.get("y1", y0)))
+            items.append({
+                'text': w.get("text", ""),
+                'x_min': x0,
+                'x_max': x1,
+                'y_center': (y0 + y1) / 2.0,
+                'height': max(1.0, y1 - y0)
+            })
+            
+        lines = []
+        current_line = []
+        for item in items:
+            if not current_line:
+                current_line.append(item)
+            else:
+                avg_y = sum(i['y_center'] for i in current_line) / len(current_line)
+                if abs(item['y_center'] - avg_y) <= item['height'] * 0.55:
+                    current_line.append(item)
+                else:
+                    lines.append(current_line)
+                    current_line = [item]
+        if current_line:
+            lines.append(current_line)
+            
+        text_lines = []
+        for line in lines:
+            line.sort(key=lambda x: x['x_min'])
+            line_str = ""
+            last_x_max = None
+            for i, it in enumerate(line):
+                if i == 0:
+                    line_str += it['text']
+                else:
+                    dist = it['x_min'] - last_x_max
+                    spaces = max(1, int(dist / 6)) if dist > 0 else 1
+                    line_str += (" " * spaces) + it['text']
+                last_x_max = it['x_max']
+            text_lines.append(line_str.strip())
+            
+        return "\n".join(text_lines)
+    except Exception as exc:
+        log.warning("  [XY-Cut] Failed to extract words with XY-Cut++: %s", exc)
+        return ""
+
 def extract_text_from_pdf(file_path: Path) -> list[str]:
     """
     Extract text from a PDF file page by page.
@@ -177,8 +343,10 @@ def extract_text_from_pdf(file_path: Path) -> list[str]:
             with pdfplumber.open(file_path) as pdf:
                 pages_text = []
                 for p in pdf.pages:
-                    text = p.extract_text(layout=False)
-                    pages_text.append(text or "")
+                    text = extract_text_with_xycut(p)
+                    if not text or len(text.strip()) < 10:
+                        text = p.extract_text(layout=False) or ""
+                    pages_text.append(text)
                 if any(pt.strip() for pt in pages_text):
                     return pages_text
                 else:
@@ -1022,8 +1190,26 @@ def is_summary_or_category_item(name: str) -> bool:
     # 2. General category/subtotal indicators (avoiding matching "total" inside product names like "STERIPORT TOTAL")
     if name_clean == "total" or re.search(r'\b(sub\s*total|grand\s*total|gross\s*total|category\s*total|dept\s*total|group\s*total|subtotal|summary)\b', name.lower()):
         return True
+    
+    # 3. Known billing category/department names that are summaries, NOT individual items.
+    #    These are compound names that unambiguously represent category-level summaries
+    #    (e.g. "Medicine-IP Pharmacy" is a category, not a real product).
+    #    NOTE: Simple names like "admission" or "laboratory" are NOT included here
+    #    because they can be legitimate standalone charges in some hospital formats.
+    category_summary_names = {
+        "medicineippharmacy", "consumablesippharmacy", "medicinecharges",
+        "consumablecharges", "consumablescharges", "pharmacydrugs",
+        "pharmacysalesreturn", "particularscharges", "bedcharges",
+        "pathologyinvestigation", "doctorfees", "othercharges",
+        "drugsandconsumables", "nursingcharges", "procedureservicecharge",
+        "administrativecharges", "dieteticsdepartment", "doctorsvisitcharge",
+        "theatrecharges", "surgeonfee", "anasthetistsfees", "surgicalsupportfees",
+        "cssdcharges", "implantcharges", "gstbedcharges",
+    }
+    if name_clean in category_summary_names:
+        return True
             
-    # Match intermediate pharmacy bills only if they explicitly contain "bill"/"bil"/"bitl"/"ein"
+    # 4. Match intermediate pharmacy bills only if they explicitly contain "bill"/"bil"/"bitl"/"ein"
     # and a long alphanumeric code containing at least one digit
     if re.search(r'\b(bill|bil|bitl|ein)\b', name.lower()):
         if re.search(r'\b[a-zA-Z0-9]{5,}\b', name) and re.search(r'\d', name):
@@ -1162,12 +1348,16 @@ DO NOT write any sentence or paragraph. START your response with the {{ characte
                 desc_full = ""
                 for k, v in item.items():
                     v_str = str(v).lower().strip()
-                    if v_str in ["medicine", "ip charges", "materials", "implant charges", "diet"]:
+                    if v_str in ["medicine", "ip charges", "materials", "implant charges", "diet",
+                                 "medicine-ip pharmacy", "consumables-ip pharmacy", "medicine charges"]:
                         is_hallucinated = True
                     if isinstance(v, str) and not v.replace(".","",1).isdigit():
                         desc_full += v.lower()
                 clean_desc = re.sub(r'[^a-z0-9]', '', desc_full)
-                if is_hallucinated or clean_desc in ["medicine", "ipcharges", "materials", "implantcharges", "diet", "billinger1", "pharmroomservice", "singleitempharmacyretail", "total", "subtotal", "grossamount", "netamount", "mrdno", "patientname"]:
+                if is_hallucinated or clean_desc in ["medicine", "ipcharges", "materials", "implantcharges", "diet",
+                        "medicineippharmacy", "consumablesippharmacy", "medicinecharges",
+                        "billinger1", "pharmroomservice", "singleitempharmacyretail",
+                        "total", "subtotal", "grossamount", "netamount", "mrdno", "patientname"]:
                     continue
                 # Filter out standalone reference bill numbers only on summary page 1
                 if page_num == 1 and bool(re.match(r'^bill\d+$', clean_desc)):
@@ -1323,53 +1513,173 @@ DO NOT write any sentence or paragraph. START your response with the {{ characte
     return {"page_number": page_num, "items": []}
 
 
-def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
+def extract_deterministic_table_rows_from_pdf(file_path: Path) -> list[dict]:
+    import pdfplumber
+    try:
+        pdf = pdfplumber.open(file_path)
+    except Exception as e:
+        log.warning("  [DETERMINISTIC EXTRACTOR] Could not open %s with pdfplumber: %s", file_path, e)
+        return []
+        
+    pages_results = []
+    cat_headers = [
+        "ADMINISTRATIVE CHARGES", "BED CHARGES", "DIETETICS DEPARTMENT", 
+        "DOCTORS VISIT CHARGE", "LABORATORY", "NURSING CHARGES", "PROCEDURE/SERVICE CHARGE", 
+        "RADIOLOGY", "CONSUMABLES-IP PHARMACY", "MEDICINE-IP PHARMACY", "MATERIALS", 
+        "IMPLANT CHARGES", "THEATRE CHARGES", "SURGEON FEE", "ANASTHETISTS FEES", 
+        "SURGICAL SUPPORT FEES", "CSSD CHARGES", "MISCELLANEOUS", "PHARMACY DRUGS",
+        "Category Total", "Gross Total", "Net Amount", "Amount to be claimed", "Claimed Amount", 
+        "Remarks", "Prepared By", "IP COUNTER"
+    ]
+    
+    for p_idx, p in enumerate(pdf.pages):
+        words = p.extract_words()
+        if not words:
+            pages_results.append({"page_number": p_idx + 1, "items": [], "taxes": []})
+            continue
+            
+        sorted_words = sorted(words, key=lambda w: (round(w['top'] / 5.0) * 5.0, w['x0']))
+        rows = {}
+        for w in sorted_words:
+            row_y = round(w['top'] / 5.0) * 5.0
+            rows.setdefault(row_y, []).append(w['text'])
+            
+        items = []
+        current_item = None
+        
+        for row_y, l in sorted(rows.items()):
+            text = " ".join(l).strip()
+            if not text:
+                continue
+                
+            if any(h.upper() in text.upper() for h in ["PAN No", "Mobile No", "MRD No", "IP No", "Claim No", "Page ", "IP BILL BREAKUP", "Patient Name", "Admission Date", "Discharge Date", "Customer", "Bill No", "Bill Type", "Bill Date", "Doctor", "Department", "Bed No", "Sl# Description", "Cpt Code"]):
+                continue
+            if any(kw in text.lower() for kw in ["net amount", "gross total", "total 34,", "discount ", "rupees", "thousand", "hundred", "claimed amount", "remarks:", "prepared by", "counter", "amount to be claimed", "tax)", "only"]):
+                continue
+                
+            m_sl = re.match(r"^([1-9][0-9]{0,2})\s+(.+)$", text)
+            if m_sl:
+                sl_num = int(m_sl.group(1))
+                body = m_sl.group(2).strip()
+                
+                m_end = re.search(r"\b(\d{2}[/-]\d{2}[/-]\d{4})\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)$", body)
+                if not m_end:
+                    m_end = re.search(r"\b(\d{2}[/-]\d{2}[/-]\d{4})\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)$", body)
+                if not m_end:
+                    m_end = re.search(r"\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)$", body)
+                    
+                if m_end:
+                    groups = m_end.groups()
+                    if len(groups) == 5:
+                        date_val, qty_val, rate_val, gross_val, disc_val = groups
+                    elif len(groups) == 4:
+                        if re.match(r"\d{2}[/-]\d{2}[/-]\d{4}", groups[0]):
+                            date_val, qty_val, rate_val, gross_val = groups
+                            disc_val = "0.00"
+                        else:
+                            date_val = ""
+                            qty_val, rate_val, gross_val, disc_val = groups
+                    else:
+                        date_val = ""
+                        rate_val, gross_val, disc_val = groups
+                        qty_val = "1"
+                        
+                    desc = body[:m_end.start()].strip()
+                    
+                    def clean_num(s):
+                        try:
+                            return float(s.replace(",", "").strip())
+                        except:
+                            return 0.0
+                            
+                    current_item = {
+                        "Sl#": str(sl_num),
+                        "Description": desc,
+                        "Cpt Code": "",
+                        "Date": date_val,
+                        "Qty": clean_num(qty_val),
+                        "Rate": clean_num(rate_val),
+                        "Gross Amount": clean_num(gross_val),
+                        "Discount": clean_num(disc_val),
+                        "item_type": "item",
+                        "Particulars": desc,
+                        "Price": clean_num(rate_val),
+                        "NetAmt": clean_num(gross_val)
+                    }
+                    items.append(current_item)
+                    continue
+                    
+            if any(h.upper() == text.upper() or text.upper().startswith(h.upper() + " ") for h in cat_headers) or text.upper() == "ADMISSION":
+                continue
+                
+            if current_item and not any(c.isdigit() for c in text[:2]):
+                if not any(kw in text.lower() for kw in ["total", "discount", "observation in op/casualty"]):
+                    current_item["Description"] += " " + text
+                    current_item["Description"] = current_item["Description"].strip()
+                    current_item["Particulars"] = current_item["Description"]
+                
+        pages_results.append({"page_number": p_idx + 1, "items": items, "taxes": []})
+        
+    return pages_results
+
+
+def extract_with_llm(pages_text: list[str], filename: str, file_path: Optional[Path] = None) -> Optional[dict]:
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     total_pages = len(pages_text)
     log.info("  [LLM] Document has %d page(s) — processing in parallel.", total_pages)
 
-    results_by_index: dict[int, dict] = {}
+    if file_path and file_path.exists():
+        det_pages = extract_deterministic_table_rows_from_pdf(file_path)
+        det_total_items = sum(len(p.get("items", [])) for p in det_pages)
+        if det_total_items >= 5:
+            log.info("  [DETERMINISTIC EXTRACTOR] Found %d structured table rows via spatial row alignment across %d pages in %s! Bypassing LLM truncation.", det_total_items, len(det_pages), filename)
+            pages_results = det_pages
+        else:
+            pages_results = []
+    else:
+        pages_results = []
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        future_to_idx = {
-            pool.submit(_extract_page, text, i+1): i
-            for i, text in enumerate(pages_text)
-        }
-        for future in as_completed(future_to_idx):
-            idx = future_to_idx[future]
-            try:
-                results_by_index[idx] = future.result()
-            except Exception as exc:
-                log.error("  [LLM] page %d raised an exception: %s", idx + 1, exc)
-                results_by_index[idx] = {"page_number": idx+1, "items": []}
+    if not pages_results:
+        results_by_index: dict[int, dict] = {}
 
-    # Reassemble in original document order
-    pages_results = []
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            future_to_idx = {
+                pool.submit(_extract_page, text, i+1): i
+                for i, text in enumerate(pages_text)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    results_by_index[idx] = future.result()
+                except Exception as exc:
+                    log.error("  [LLM] page %d raised an exception: %s", idx + 1, exc)
+                    results_by_index[idx] = {"page_number": idx+1, "items": []}
 
-    for idx in range(total_pages):
-        res = results_by_index.get(idx, {"page_number": idx+1, "items": []})
-        page_num = idx + 1
-        raw_items = res.get("items", [])
-        page_items = []
-        page_taxes = []
+        # Reassemble in original document order
+        for idx in range(total_pages):
+            res = results_by_index.get(idx, {"page_number": idx+1, "items": []})
+            page_num = idx + 1
+            raw_items = res.get("items", [])
+            page_items = []
+            page_taxes = []
 
-        for item in raw_items:
-            if not isinstance(item, dict):
-                continue
-            new_item = normalize_item(item)
-            if new_item.get("Particulars"):
-                if new_item.get("item_type") == "tax":
-                    page_taxes.append(new_item)
-                else:
-                    page_items.append(new_item)
+            for item in raw_items:
+                if not isinstance(item, dict):
+                    continue
+                new_item = normalize_item(item)
+                if new_item.get("Particulars"):
+                    if new_item.get("item_type") == "tax":
+                        page_taxes.append(new_item)
+                    else:
+                        page_items.append(new_item)
 
-        clean_res = {
-            "page_number": page_num,
-            "items": page_items,
-            "taxes": page_taxes
-        }
-        pages_results.append(clean_res)
+            clean_res = {
+                "page_number": page_num,
+                "items": page_items,
+                "taxes": page_taxes
+            }
+            pages_results.append(clean_res)
 
     # ── Summary Page Deduplication Check ─────────────────────────────────────
     def is_summary_page(items):
@@ -1558,6 +1868,17 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
         log.warning("  [RECONCILIATION] Error during verification loop: %s", e)
 
     # Denormalize items back to original keys matching the page columns
+    cat_prefixes = [
+        r"ADMINISTRATIVE CHARGES", r"ADMISSION", r"BED CHARGES", r"DIETETICS DEPARTMENT",
+        r"DOCTORS VISIT CHARGE", r"LABORATORY", r"NURSING CHARGES", r"PROCEDURE/SERVICE CHARGE",
+        r"RADIOLOGY", r"CONSUMABLES-IP PHARMACY", r"MEDICINE-IP PHARMACY", r"MATERIALS",
+        r"IMPLANT CHARGES", r"DIET", r"THEATRE CHARGES", r"SURGEON FEE", r"ANASTHETISTS FEES",
+        r"SURGICAL SUPPORT FEES", r"CSSD CHARGES", r"MISCELLANEOUS", r"PHARMACY DRUGS",
+        r"PARTICULARS CHARGES"
+    ]
+    last_sl_num = 0
+    last_seen_date = ""
+
     for p in pages_results:
         page_num = p["page_number"]
         p_text = pages_text[page_num - 1]
@@ -1565,7 +1886,80 @@ def extract_with_llm(pages_text: list[str], filename: str) -> Optional[dict]:
         
         denorm_items = []
         for item in p.get("items", []):
-            denorm_items.append(denormalize_item(item, headers))
+            denorm = denormalize_item(item, headers)
+            
+            # Find which key in denorm represents serial number
+            sl_key = next((k for k in denorm if k.lower() in ["sl#", "si#"]), None)
+            if not sl_key and any(h.lower() in ["sl#", "si#"] for h in headers):
+                sl_key = next((h for h in headers if h.lower() in ["sl#", "si#"]), "Sl#")
+                
+            if sl_key:
+                val = str(denorm.get(sl_key, "")).strip()
+                if val.isdigit() and int(val) > last_sl_num:
+                    last_sl_num = int(val)
+                elif last_sl_num > 0:
+                    last_sl_num += 1
+                    denorm[sl_key] = str(last_sl_num)
+                elif not val:
+                    # Check if page text starts with Sl numbers (like 1, 2, 3)
+                    if any(re.match(r"^\s*([1-9][0-9]{0,2})\s+", line) for line in p_text.splitlines()[:30]):
+                        last_sl_num = 1
+                        denorm[sl_key] = str(last_sl_num)
+                    
+            # Clean Description / Particulars
+            for desc_key in ["Description", "Particulars"]:
+                if desc_key in denorm:
+                    desc = str(denorm[desc_key]).strip()
+                    for cat in cat_prefixes:
+                        if re.match(r"^" + cat + r"\b", desc, flags=re.IGNORECASE):
+                            desc = re.sub(r"^" + cat + r"\s*", "", desc, flags=re.IGNORECASE).strip()
+                            break
+                    m_sl = re.match(r"^([0-9]{1,4})\s+(.*)$", desc)
+                    if m_sl and 0 < int(m_sl.group(1)) <= 500:
+                        desc = m_sl.group(2).strip()
+                        if sl_key and not denorm.get(sl_key):
+                            denorm[sl_key] = m_sl.group(1)
+                            if m_sl.group(1).isdigit() and int(m_sl.group(1)) > last_sl_num:
+                                last_sl_num = int(m_sl.group(1))
+                    # Remove trailing Sl number if duplicated at end of description
+                    if sl_key and denorm.get(sl_key):
+                        m_end = re.search(r"\s+([0-9]{1,4})$", desc)
+                        if m_end and m_end.group(1) == str(denorm.get(sl_key)):
+                            desc = re.sub(r"\s+" + m_end.group(1) + r"$", "", desc).strip()
+                    denorm[desc_key] = desc
+
+            # Auto-populate Date from exact line in raw text or fallback to last seen date
+            if "Date" in denorm or any(h.lower() == "date" for h in headers):
+                date_key = "Date" if "Date" in denorm else next((h for h in headers if h.lower() == "date"), "Date")
+                date_val = str(denorm.get(date_key, "")).strip()
+                if not date_val:
+                    sl_val = str(denorm.get(sl_key, "")).strip() if sl_key else ""
+                    desc_val = str(denorm.get("Description", denorm.get("Particulars", ""))).strip()
+                    lines = p_text.splitlines()
+                    # 1. Match exact Sl number at start of line
+                    if sl_val and sl_val.isdigit():
+                        for l in lines:
+                            if re.match(r"^\s*" + re.escape(sl_val) + r"\b", l):
+                                m_d = re.search(r"\b(\d{2}[/-]\d{2}[/-]\d{4})\b", l)
+                                if m_d:
+                                    date_val = m_d.group(1)
+                                    break
+                    # 2. Match price and description words in line
+                    if not date_val:
+                        for l in lines:
+                            if (str(int(denorm.get("Gross Amount", denorm.get("NetAmt", -1)))) in l or str(int(denorm.get("Rate", denorm.get("Price", -1)))) in l) and any(w.lower() in l.lower() for w in desc_val.split() if len(w) > 3):
+                                m_d = re.search(r"\b(\d{2}[/-]\d{2}[/-]\d{4})\b", l)
+                                if m_d:
+                                    date_val = m_d.group(1)
+                                    break
+                    # 3. Fallback to last seen date
+                    if not date_val and last_seen_date:
+                        date_val = last_seen_date
+                if date_val:
+                    last_seen_date = date_val
+                    denorm[date_key] = date_val
+
+            denorm_items.append(denorm)
         p["items"] = denorm_items
 
         denorm_taxes = []
@@ -1821,7 +2215,7 @@ def process_file(file_path: Path) -> None:
 
     pages_text = stitch_cross_page_splits(pages_text)
 
-    result = extract_with_llm(pages_text, file_path.name)
+    result = extract_with_llm(pages_text, file_path.name, file_path=file_path)
 
     if result is None:
         log.warning("  Skipping %s — LLM extraction returned nothing.", file_path.name)
