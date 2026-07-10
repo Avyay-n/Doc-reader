@@ -343,7 +343,9 @@ def extract_text_from_pdf(file_path: Path) -> list[str]:
             with pdfplumber.open(file_path) as pdf:
                 pages_text = []
                 for p in pdf.pages:
-                    text = extract_text_with_xycut(p)
+                    text = p.extract_text(layout=True) if hasattr(p, 'extract_text') else ""
+                    if not text or len(text.strip()) < 10:
+                        text = extract_text_with_xycut(p)
                     if not text or len(text.strip()) < 10:
                         text = p.extract_text(layout=False) or ""
                     pages_text.append(text)
@@ -973,17 +975,32 @@ def find_matching_line(particulars, page_text):
     if not particulars or not page_text:
         return ""
     part_lower = particulars.lower().strip()
+    
+    # 1. Exact string match after removing trailing numbers/prices
+    for line in page_text.splitlines():
+        line_lower = line.lower().strip()
+        if not line_lower:
+            continue
+        clean_text = re.sub(r'[\d\.\s,-]+$', '', line_lower).strip()
+        if clean_text == part_lower:
+            return line
+
+    # 2. Substring match, picking the closest in text length
+    substring_matches = []
+    for line in page_text.splitlines():
+        line_lower = line.lower().strip()
+        if part_lower in line_lower:
+            substring_matches.append(line)
+    if substring_matches:
+        return min(substring_matches, key=lambda l: abs(len(re.sub(r'[\d\.\s,-]+$', '', l.lower().strip()).strip()) - len(part_lower)))
+
     best_line = ""
     best_score = 0.0
-    
     import difflib
     for line in page_text.splitlines():
         line_lower = line.lower().strip()
         if not line_lower:
             continue
-        if part_lower in line_lower:
-            return line
-            
         ratio = difflib.SequenceMatcher(None, part_lower, line_lower).ratio()
         if ratio > best_score:
             best_score = ratio
@@ -1075,11 +1092,17 @@ def fix_ocr_json_math(items, page_text=""):
                         log.info("  [MATH RECONCILIATION] Swapping Price %.2f to NetAmt because NetAmt %.2f was not found in text line: '%s'", price, net, line.strip())
                         item["NetAmt"] = price
                         item["Price"] = round(price / qty, 2)
-                        price = item["Price"]
-                        net = item["NetAmt"]
                     elif net_exists and not price_exists:
                         item["Price"] = round(net / qty, 2)
                         price = item["Price"]
+                    elif not net_exists and not price_exists:
+                        line_amounts = [float(x) for x in re.findall(r'\b\d+\.\d{2}\b', line_no_commas)]
+                        if len(line_amounts) == 1 and line_amounts[0] > 0:
+                            log.info("  [MATH RECONCILIATION] Correcting hallucinated/subtotal Price/NetAmt (%.2f) to exact line currency amount %.2f for item '%s'", net, line_amounts[0], item.get("Particulars"))
+                            item["NetAmt"] = line_amounts[0]
+                            item["Price"] = round(line_amounts[0] / qty, 2)
+                            price = item["Price"]
+                            net = item["NetAmt"]
         
         # If Price equals NetAmt but Quantity is greater than 1,
         # it is highly likely that Price was misaligned to the total Amount column
@@ -1157,24 +1180,69 @@ def _extract_page(page_text: str, page_num: int, max_retries: int = 5) -> dict:
             if not isinstance(it, dict):
                 continue
             is_dup = False
+            part_curr = str(it.get("Particulars", "")).strip()
+            part_curr_clean = re.sub(r'[^a-zA-Z0-9]', '', part_curr).lower()
+            p_curr = it.get("Price", 0.0)
+            q_curr = it.get("Quantity", 1.0)
+            net_curr = it.get("NetAmt", 0.0)
+            
             for existing in fuzzy_unique:
                 if isinstance(existing, dict):
-                    p_curr = it.get("Price", 0.0)
+                    part_ex = str(existing.get("Particulars", "")).strip()
+                    part_ex_clean = re.sub(r'[^a-zA-Z0-9]', '', part_ex).lower()
                     p_ex = existing.get("Price", 0.0)
-                    q_curr = it.get("Quantity", 1.0)
                     q_ex = existing.get("Quantity", 1.0)
-                    if p_curr == p_ex and q_curr == q_ex and p_curr != 0 and p_curr is not None:
-                        part_curr = str(it.get("Particulars", "")).strip()
-                        part_ex = str(existing.get("Particulars", "")).strip()
-                        if part_curr.lower() in part_ex.lower() or part_ex.lower() in part_curr.lower() or difflib.SequenceMatcher(None, part_curr.lower(), part_ex.lower()).ratio() > 0.80:
-                            if len(part_curr) > len(part_ex):
-                                existing["Particulars"] = part_curr
-                            is_dup = True
+                    net_ex = existing.get("NetAmt", 0.0)
+                    
+                    # Never fuzzy-dedup distinct tax items (e.g. CGST vs SGST are legitimate pairs)
+                    tax_re = re.compile(r'\b(CGST|SGST|IGST|GST|VAT)\b', re.IGNORECASE)
+                    curr_is_tax = bool(tax_re.search(part_curr))
+                    ex_is_tax = bool(tax_re.search(part_ex))
+                    if curr_is_tax and ex_is_tax:
+                        curr_tax_type = tax_re.search(part_curr).group(1).upper()
+                        ex_tax_type = tax_re.search(part_ex).group(1).upper()
+                        if curr_tax_type != ex_tax_type:
+                            continue  # Different tax types — keep both
+                            
+                    # Check for distinguishing terms (e.g. 1st visit vs subsequent visit, visit 1 vs visit 2)
+                    distinguishing_pairs = [
+                        ("1st", "subse"), ("first", "subse"), ("1st", "2nd"), ("first", "second"),
+                        ("1st", "subsequent"), ("first", "subsequent"),
+                        ("visit 1", "visit 2"), ("routine visit 1", "routine visit 2"), ("admission", "discharge"),
+                        ("cgst", "sgst"), ("cgst", "igst"), ("sgst", "igst"), ("b/711", "b/719")
+                    ]
+                    has_distinction = False
+                    for t1, t2 in distinguishing_pairs:
+                        if (t1 in part_curr.lower() and t2 in part_ex.lower()) or (t2 in part_curr.lower() and t1 in part_ex.lower()):
+                            has_distinction = True
                             break
+                    if has_distinction:
+                        continue
+                        
+                    # Check if they are duplicates
+                    is_exact_name = (part_curr_clean == part_ex_clean and len(part_curr_clean) > 3)
+                    is_fuzzy_name = (part_curr.lower() in part_ex.lower() or part_ex.lower() in part_curr.lower() or difflib.SequenceMatcher(None, part_curr.lower(), part_ex.lower()).ratio() > 0.85)
+                    
+                    if not is_exact_name and is_fuzzy_name:
+                        s_shorter = part_curr if len(part_curr) < len(part_ex) else part_ex
+                        if len(s_shorter.strip()) >= 5 and page_text.lower().count(s_shorter.lower().strip()) >= 2:
+                            continue  # Both occurrences physically exist on the page — do NOT merge!
+                    
+                    if is_exact_name or (is_fuzzy_name and p_curr == p_ex and q_curr == q_ex and p_curr != 0 and p_curr is not None):
+                        if len(part_curr) > len(part_ex):
+                            existing["Particulars"] = part_curr
+                        # If exact name match but different amounts, keep the one with smaller netamt or where math holds
+                        if is_exact_name and net_curr != net_ex and net_curr > 0 and net_ex > 0:
+                            if net_curr < net_ex:
+                                existing["Price"] = p_curr
+                                existing["Quantity"] = q_curr
+                                existing["NetAmt"] = net_curr
+                        is_dup = True
+                        break
             if not is_dup:
                 fuzzy_unique.append(it)
                 
-        return {"page_number": page_num, "items": fuzzy_unique}
+        return {"page_number": page_num, "items": fix_ocr_json_math(fuzzy_unique, page_text)}
 
     return _extract_page_single(page_text, page_num, max_retries)
 
@@ -1182,8 +1250,19 @@ def _extract_page(page_text: str, page_num: int, max_retries: int = 5) -> dict:
 def is_summary_or_category_item(name: str) -> bool:
     name_clean = re.sub(r'[^a-zA-Z0-9]', '', name).lower()
     
-    # 1. Filter out actual final totals/footers
-    total_keys = {"total", "subtotal", "grandtotal", "grossamount", "netamount", "amountpayable"}
+    # 0. Table header and section subtotal indicators
+    if "total :" in name.lower() or ": total" in name.lower() or "dated -" in name.lower() or "dated ." in name.lower() or "dated :" in name.lower() or "pharm room service" in name.lower() or "billing eri" in name.lower() or "single item pharmacy" in name.lower() or "ss-pharmacy retail" in name.lower():
+        return True
+    if name.upper().strip() in ["RETURNED", "R;E;TU;R;N;EDI", "BATCH NUMBER", "EXPIRY DATE", "TOTAL AMOUNT", "RETURNED AMOUNT", "ITEM NUMBER", "ITEM CODE", "ITEM NAME", "BILLED QTY", "RTN QTY"]:
+        return True
+        
+    # 1. Filter out actual final totals/footers and document headers
+    total_keys = {
+        "total", "subtotal", "grandtotal", "grossamount", "netamount", "amountpayable",
+        "billofsupply", "netamountduers", "hospitalbillamount", "grossbillamount",
+        "netbillamount", "paidamount", "netpayable", "totalclaimed", "pharmacybill",
+        "pharmacysalesreturn", "billdetails", "return", "returned", "rtn", "returntotal"
+    }
     if name_clean in total_keys:
         return True
         
@@ -1192,10 +1271,6 @@ def is_summary_or_category_item(name: str) -> bool:
         return True
     
     # 3. Known billing category/department names that are summaries, NOT individual items.
-    #    These are compound names that unambiguously represent category-level summaries
-    #    (e.g. "Medicine-IP Pharmacy" is a category, not a real product).
-    #    NOTE: Simple names like "admission" or "laboratory" are NOT included here
-    #    because they can be legitimate standalone charges in some hospital formats.
     category_summary_names = {
         "medicineippharmacy", "consumablesippharmacy", "medicinecharges",
         "consumablecharges", "consumablescharges", "pharmacydrugs",
@@ -1204,7 +1279,9 @@ def is_summary_or_category_item(name: str) -> bool:
         "drugsandconsumables", "nursingcharges", "procedureservicecharge",
         "administrativecharges", "dieteticsdepartment", "doctorsvisitcharge",
         "theatrecharges", "surgeonfee", "anasthetistsfees", "surgicalsupportfees",
-        "cssdcharges", "implantcharges", "gstbedcharges",
+        "cssdcharges", "implantcharges", "gstbedcharges", "sspharmacyretail",
+        "billingeri", "pharmroomservice", "singleitempharmacyretail", "billofsupply",
+        "netamountduers"
     }
     if name_clean in category_summary_names:
         return True
@@ -1683,7 +1760,7 @@ def extract_with_llm(pages_text: list[str], filename: str, file_path: Optional[P
 
     # ── Summary Page Deduplication Check ─────────────────────────────────────
     def is_summary_page(items):
-        if not items or len(items) < 3:
+        if not items:
             return False
             
         category_names = {
@@ -1693,7 +1770,9 @@ def extract_with_llm(pages_text: list[str], filename: str, file_path: Optional[P
             "diet", "doctorsvisitcharge", "laboratory", "nursingcharges",
             "procedureservicecharge", "radiology", "pharmacydrugs", "materials",
             "implantcharges", "theatrecharges", "surgeonfee", "anasthetistsfees",
-            "surgicalsupportfees", "cssdcharges", "miscellaneous"
+            "surgicalsupportfees", "cssdcharges", "miscellaneous",
+            "billofsupply", "netamountduers", "hospitalbillamount", "grossbillamount",
+            "netbillamount", "paidamount", "billdetails", "pharmacybill"
         }
         
         count = 0
@@ -1702,7 +1781,7 @@ def extract_with_llm(pages_text: list[str], filename: str, file_path: Optional[P
             if part_clean in category_names:
                 count += 1
                 
-        return (count / len(items)) >= 0.60
+        return (count / len(items)) >= 0.50
 
     def remove_summary_pages(pages_list):
         # 1. Identify and drop pages that are high-level category summary bills
@@ -1758,8 +1837,8 @@ def extract_with_llm(pages_text: list[str], filename: str, file_path: Optional[P
 
     pages_results = remove_summary_pages(pages_results)
     
-    # Recalculate total items
-    total_items = sum(len(p.get("items", [])) for p in pages_results)
+    # Recalculate total items (including taxes)
+    total_items = sum(len(p.get("items", [])) + len(p.get("taxes", [])) for p in pages_results)
 
     if total_items == 0 and total_pages > 0:
         log.warning("  [LLM] No items extracted from any pages.")
