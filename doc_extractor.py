@@ -1085,24 +1085,32 @@ def fix_ocr_json_math(items, page_text=""):
                 net_exists = (net_str_dec in line_no_commas or net_str_int in line_no_commas) if net > 0 else True
                 price_exists = (price_str_dec in line_no_commas or price_str_int in line_no_commas) if price > 0 else True
                 
-                # Check for column misalignment: Qty > 1, Price and NetAmt are different,
-                # but only Price (which represents NetAmt) exists in the text.
+                # Check 1: If neither Price nor NetAmt exists in the matched raw text line,
+                # but the line has exactly one currency/monetary amount (e.g. 2000.00),
+                # correct hallucinated or subtotal-grabbed Price/NetAmt to the exact line currency amount.
+                if not net_exists and not price_exists:
+                    line_amounts = [float(x) for x in re.findall(r'\b\d+\.\d{2}\b', line_no_commas)]
+                    if len(line_amounts) == 1 and line_amounts[0] > 0:
+                        log.info("  [MATH RECONCILIATION] Correcting hallucinated/subtotal Price/NetAmt (%.2f) to exact line currency amount %.2f for item '%s'", net, line_amounts[0], item.get("Particulars"))
+                        item["NetAmt"] = line_amounts[0]
+                        item["Price"] = round(line_amounts[0] / qty, 2)
+                        price = item["Price"]
+                        net = item["NetAmt"]
+                        net_exists = True
+                        price_exists = True
+
+                # Check 2: Check for column misalignment: Qty > 1, Price and NetAmt are different,
+                # but only Price (or only NetAmt) exists in the text.
                 if qty > 1.0 and abs(price - net) > 0.05:
                     if price_exists and not net_exists:
                         log.info("  [MATH RECONCILIATION] Swapping Price %.2f to NetAmt because NetAmt %.2f was not found in text line: '%s'", price, net, line.strip())
                         item["NetAmt"] = price
                         item["Price"] = round(price / qty, 2)
+                        price = item["Price"]
+                        net = item["NetAmt"]
                     elif net_exists and not price_exists:
                         item["Price"] = round(net / qty, 2)
                         price = item["Price"]
-                    elif not net_exists and not price_exists:
-                        line_amounts = [float(x) for x in re.findall(r'\b\d+\.\d{2}\b', line_no_commas)]
-                        if len(line_amounts) == 1 and line_amounts[0] > 0:
-                            log.info("  [MATH RECONCILIATION] Correcting hallucinated/subtotal Price/NetAmt (%.2f) to exact line currency amount %.2f for item '%s'", net, line_amounts[0], item.get("Particulars"))
-                            item["NetAmt"] = line_amounts[0]
-                            item["Price"] = round(line_amounts[0] / qty, 2)
-                            price = item["Price"]
-                            net = item["NetAmt"]
         
         # If Price equals NetAmt but Quantity is greater than 1,
         # it is highly likely that Price was misaligned to the total Amount column
