@@ -19,13 +19,13 @@ To run this project on a new PC or laptop (Windows, macOS, or Linux), you need t
 
 ## 🚀 Step-by-Step Setup Guide
 
-### Step 1: Download & Run Ollama (`llama3.1`)
+### Step 1: Download & Run Ollama (`qwen2.5:7b`)
 1. Install Ollama and make sure the application is running in your system tray / background.
 2. Open your terminal (`PowerShell` or `Command Prompt` on Windows, `Terminal` on Mac) and pull the required model:
    ```bash
-   ollama pull llama3.1
+   ollama pull qwen2.5:7b
    ```
-   *(This downloads the `llama3.1` model used by the extractor. If you prefer a smaller model, you can pull `llama3.2` or `mistral`).*
+   *(This downloads the `qwen2.5:7b` model used by the extractor. If you prefer another model, you can pull `llama3.1` or `mistral`).*
 
 ---
 
@@ -86,7 +86,7 @@ python doc_extractor.py
 ### 3. Specify a Different Ollama Model
 If you pulled a different model or want to test another version:
 ```powershell
-python doc_extractor.py doc1.pdf --model llama3.1:8b
+python doc_extractor.py doc1.pdf --model llama3.1
 ```
 
 ---

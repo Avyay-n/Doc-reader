@@ -92,8 +92,11 @@ except ImportError:
 # ── Configuration ─────────────────────────────────────────────────────────────
 OUTPUT_DIR  = Path("output_docs")
 
-# Change to whichever model you have pulled locally.
-OLLAMA_MODEL    = "llama3.1"
+# Hybrid Cascade Configuration:
+# Tier 1 (Fast Pass): Uses 3B model for 3x speed on initial extraction (fits 100% in 4GB VRAM)
+OLLAMA_MODEL        = "qwen2.5:3b"
+# Tier 2 (Heavy Escalation): Uses 7B model when math discrepancy is detected or during self-correction
+OLLAMA_HEAVY_MODEL  = "qwen2.5:7b"
 AI_ENGINE       = "ollama"
 FALLBACK_ENGINE = "ollama"
 MAX_WORKERS     = 4
@@ -377,7 +380,7 @@ def extract_text_from_pdf(file_path: Path) -> list[str]:
                 doc = fitz.open(file_path)
                 pages_text = []
                 for page in doc:
-                    pix = page.get_pixmap(dpi=400)
+                    pix = page.get_pixmap(dpi=250)
                     # Convert PyMuPDF pixmap to numpy array
                     img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
                     if pix.n == 4:
@@ -409,7 +412,7 @@ def extract_text_from_pdf(file_path: Path) -> list[str]:
                 doc = fitz.open(file_path)
                 pages_text = []
                 for page in doc:
-                    pix = page.get_pixmap(dpi=400)
+                    pix = page.get_pixmap(dpi=250)
                     # Convert PyMuPDF pixmap to numpy array
                     img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
                     if pix.n == 4:
@@ -664,7 +667,7 @@ def clean_json_response(raw: str) -> str:
     return raw
 
 
-def _call_llm(messages: list, label: str) -> Optional[str]:
+def _call_llm(messages: list, label: str, model_override: Optional[str] = None) -> Optional[str]:
     # Schema definition for strict JSON output enforcement
     schema_def = {
         "type": "OBJECT",
@@ -680,11 +683,13 @@ def _call_llm(messages: list, label: str) -> Optional[str]:
                         "Price": {"type": "NUMBER"},
                         "NetAmt": {"type": "NUMBER"}
                     },
-                    "required": ["Particulars", "Quantity", "Price", "NetAmt"]
+                    "required": ["Particulars", "Quantity", "Price", "NetAmt"],
+                    "additionalProperties": False
                 }
             }
         },
-        "required": ["page_number", "items"]
+        "required": ["page_number", "items"],
+        "additionalProperties": False
     }
 
     try:
@@ -694,7 +699,7 @@ def _call_llm(messages: list, label: str) -> Optional[str]:
             api_key = os.environ.get("GEMINI_API_KEY", "")
             if not api_key:
                 log.warning("  [GEMINI] GEMINI_API_KEY environment variable not set! Falling back to %s...", FALLBACK_ENGINE)
-                return _call_fallback(messages, label)
+                return _call_fallback(messages, label, model_override=model_override)
             url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
             prompt_text = "\n\n".join(m["content"] for m in messages)
             payload = _json.dumps({
@@ -719,16 +724,16 @@ def _call_llm(messages: list, label: str) -> Optional[str]:
                         _time.sleep(15)
                     else:
                         log.warning("  [GEMINI] HTTP error %s. Falling back to %s...", he, FALLBACK_ENGINE)
-                        return _call_fallback(messages, label)
+                        return _call_fallback(messages, label, model_override=model_override)
             log.warning("  [GEMINI] Retries exhausted. Falling back to %s...", FALLBACK_ENGINE)
-            return _call_fallback(messages, label)
+            return _call_fallback(messages, label, model_override=model_override)
         elif AI_ENGINE == "openai":
             log.info("  [LLM] Calling OpenAI Cloud API (%s)…", label)
             import urllib.request, json as _json, os
             api_key = os.environ.get("OPENAI_API_KEY", "")
             if not api_key:
                 log.warning("  [OPENAI] OPENAI_API_KEY environment variable not set! Falling back to %s...", FALLBACK_ENGINE)
-                return _call_fallback(messages, label)
+                return _call_fallback(messages, label, model_override=model_override)
             url = "https://api.openai.com/v1/chat/completions"
             # Lowercase types for OpenAI JSON Schema
             openai_schema = {
@@ -770,31 +775,32 @@ def _call_llm(messages: list, label: str) -> Optional[str]:
                     return res_data["choices"][0]["message"]["content"]
             except Exception as exc:
                 log.warning("  [OPENAI] Call failed (%s). Falling back to %s...", exc, FALLBACK_ENGINE)
-                return _call_fallback(messages, label)
+                return _call_fallback(messages, label, model_override=model_override)
 
-        return _call_ollama_engine(messages, label)
+        return _call_ollama_engine(messages, label, model_override=model_override)
     except Exception as exc:
         log.error("  [LLM] %s call failed: %s", AI_ENGINE, exc)
         if AI_ENGINE != FALLBACK_ENGINE:
             log.info("  [LLM] Attempting fallback engine '%s'...", FALLBACK_ENGINE)
-            return _call_fallback(messages, label)
+            return _call_fallback(messages, label, model_override=model_override)
         return None
 
 
-def _call_fallback(messages: list, label: str) -> Optional[str]:
+def _call_fallback(messages: list, label: str, model_override: Optional[str] = None) -> Optional[str]:
     if FALLBACK_ENGINE == "ollama":
-        return _call_ollama_engine(messages, label + " [fallback]")
+        return _call_ollama_engine(messages, label + " [fallback]", model_override=model_override)
     return None
 
 
-def _call_ollama_engine(messages: list, label: str) -> Optional[str]:
+def _call_ollama_engine(messages: list, label: str, model_override: Optional[str] = None) -> Optional[str]:
     try:
-        log.info("  [LLM] Calling Ollama model '%s' (%s)…", OLLAMA_MODEL, label)
+        model_to_use = model_override if model_override else OLLAMA_MODEL
+        log.info("  [LLM] Calling Ollama model '%s' (%s)…", model_to_use, label)
         response = ollama.chat(
-            model=OLLAMA_MODEL,
+            model=model_to_use,
             messages=messages,
             format="json",
-            options={"temperature": 0, "seed": 42, "num_predict": 8192},
+            options={"temperature": 0, "seed": 42, "num_ctx": 4096, "num_predict": 2048},
         )
         reply: str = response["message"]["content"]
         log.info("  [LLM] Received %d chars from model", len(reply))
@@ -860,27 +866,27 @@ def denormalize_item(item: dict, headers: list[str]) -> dict:
             val = get_case_insensitive(item, ["sl#", "si#"], "")
             denorm[h] = val
         elif h_lower == "description":
-            denorm[h] = item.get("Particulars", "")
+            denorm[h] = item.get("Particulars", get_case_insensitive(item, ["description"], ""))
         elif h_lower == "cpt code":
             denorm[h] = get_case_insensitive(item, ["cpt code", "cptcode"], "")
         elif h_lower == "date":
             denorm[h] = get_case_insensitive(item, ["date"], "")
         elif h_lower == "qty":
-            denorm[h] = item.get("Quantity", 1.0)
+            denorm[h] = item.get("Quantity", item.get("Qty", 1.0))
         elif h_lower == "rate":
-            denorm[h] = item.get("Price", 0.0)
+            denorm[h] = item.get("Price", item.get("Rate", 0.0))
         elif h_lower == "gross amount":
-            denorm[h] = item.get("NetAmt", 0.0)
+            denorm[h] = item.get("NetAmt", item.get("Gross Amount", 0.0))
         elif h_lower == "discount":
-            denorm[h] = get_case_insensitive(item, ["discount"], 0.0)
+            denorm[h] = get_case_insensitive(item, ["discount", "disc"], 0.0)
         elif h_lower == "particulars":
-            denorm[h] = item.get("Particulars", "")
+            denorm[h] = item.get("Particulars", get_case_insensitive(item, ["description"], ""))
         elif h_lower == "quantity":
-            denorm[h] = item.get("Quantity", 1.0)
+            denorm[h] = item.get("Quantity", item.get("Qty", 1.0))
         elif h_lower == "price":
-            denorm[h] = item.get("Price", 0.0)
+            denorm[h] = item.get("Price", item.get("Rate", 0.0))
         elif h_lower == "netamt":
-            denorm[h] = item.get("NetAmt", 0.0)
+            denorm[h] = item.get("NetAmt", item.get("Gross Amount", 0.0))
         else:
             denorm[h] = item.get(h, "")
             
@@ -940,7 +946,11 @@ def normalize_item(item: dict) -> dict:
             pass
             
     # Fallbacks to align them mathematically
-    if price is None and net is not None:
+    if (price is None or price == 0.0) and (net is None or net == 0.0) and qty > 20:
+        net = float(qty)
+        price = float(qty)
+        qty = 1.0
+    elif price is None and net is not None:
         price = round(net / qty, 2) if qty > 0 else net
     elif net is None and price is not None:
         net = round(price * qty, 2)
@@ -960,8 +970,11 @@ def normalize_item(item: dict) -> dict:
             
     normalized["Particulars"] = particulars
     normalized["Quantity"] = qty
+    normalized["Qty"] = qty
     normalized["Price"] = price
+    normalized["Rate"] = price
     normalized["NetAmt"] = net
+    normalized["Gross Amount"] = net
     
     if bool(re.search(r'\b(CGST|SGST|IGST|GST|VAT)\b', particulars.upper())):
         normalized["item_type"] = "tax"
@@ -1683,13 +1696,112 @@ def extract_deterministic_table_rows_from_pdf(file_path: Path) -> list[dict]:
                         "Cpt Code": "",
                         "Date": date_val,
                         "Qty": clean_num(qty_val),
+                        "Quantity": clean_num(qty_val),
                         "Rate": clean_num(rate_val),
+                        "Price": clean_num(rate_val),
                         "Gross Amount": clean_num(gross_val),
+                        "NetAmt": clean_num(gross_val),
                         "Discount": clean_num(disc_val),
                         "item_type": "item",
                         "Particulars": desc,
+                    }
+                    items.append(current_item)
+                    continue
+                    
+            if any(h.upper() == text.upper() or text.upper().startswith(h.upper() + " ") for h in cat_headers) or text.upper() == "ADMISSION":
+                continue
+                
+            if current_item and not any(c.isdigit() for c in text[:2]):
+                if not any(kw in text.lower() for kw in ["total", "discount", "observation in op/casualty"]):
+                    current_item["Description"] += " " + text
+                    current_item["Description"] = current_item["Description"].strip()
+                    current_item["Particulars"] = current_item["Description"]
+                
+        pages_results.append({"page_number": p_idx + 1, "items": items, "taxes": []})
+        
+    return pages_results
+
+
+def extract_deterministic_table_rows_from_text(pages_text: list[str]) -> list[dict]:
+    pages_results = []
+    cat_headers = [
+        "ADMINISTRATIVE CHARGES", "BED CHARGES", "DIETETICS DEPARTMENT", 
+        "DOCTORS VISIT CHARGE", "LABORATORY", "NURSING CHARGES", "PROCEDURE/SERVICE CHARGE", 
+        "RADIOLOGY", "CONSUMABLES-IP PHARMACY", "MEDICINE-IP PHARMACY", "MATERIALS", 
+        "IMPLANT CHARGES", "THEATRE CHARGES", "SURGEON FEE", "ANASTHETISTS FEES", 
+        "SURGICAL SUPPORT FEES", "CSSD CHARGES", "MISCELLANEOUS", "PHARMACY DRUGS",
+        "Category Total", "Gross Total", "Net Amount", "Amount to be claimed", "Claimed Amount", 
+        "Remarks", "Prepared By", "IP COUNTER"
+    ]
+    
+    for p_idx, p_text in enumerate(pages_text):
+        if not p_text.strip():
+            pages_results.append({"page_number": p_idx + 1, "items": [], "taxes": []})
+            continue
+            
+        lines = p_text.split('\n')
+        items = []
+        current_item = None
+        
+        for text in lines:
+            text = text.strip()
+            if not text:
+                continue
+                
+            if any(h.upper() in text.upper() for h in ["PAN No", "Mobile No", "MRD No", "IP No", "Claim No", "Page ", "IP BILL BREAKUP", "Patient Name", "Admission Date", "Discharge Date", "Customer", "Bill No", "Bill Type", "Bill Date", "Doctor", "Department", "Bed No", "Sl# Description", "Cpt Code"]):
+                continue
+            if any(kw in text.lower() for kw in ["net amount", "gross total", "total 34,", "discount ", "rupees", "thousand", "hundred", "claimed amount", "remarks:", "prepared by", "counter", "amount to be claimed", "tax)", "only"]):
+                continue
+                
+            m_sl = re.match(r"^([1-9][0-9]{0,2})\s+(.+)$", text)
+            if m_sl:
+                sl_num = int(m_sl.group(1))
+                body = m_sl.group(2).strip()
+                
+                m_end = re.search(r"\b(\d{2}[/-]\d{2}[/-]\d{4})\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)$", body)
+                if not m_end:
+                    m_end = re.search(r"\b(\d{2}[/-]\d{2}[/-]\d{4})\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)$", body)
+                if not m_end:
+                    m_end = re.search(r"\s+([\d,.]+)\s+([\d,.]+)\s+([\d,.]+)$", body)
+                    
+                if m_end:
+                    groups = m_end.groups()
+                    if len(groups) == 5:
+                        date_val, qty_val, rate_val, gross_val, disc_val = groups
+                    elif len(groups) == 4:
+                        if re.match(r"\d{2}[/-]\d{2}[/-]\d{4}", groups[0]):
+                            date_val, qty_val, rate_val, gross_val = groups
+                            disc_val = "0.00"
+                        else:
+                            date_val = ""
+                            qty_val, rate_val, gross_val, disc_val = groups
+                    else:
+                        date_val = ""
+                        rate_val, gross_val, disc_val = groups
+                        qty_val = "1"
+                        
+                    desc = body[:m_end.start()].strip()
+                    
+                    def clean_num(s):
+                        try:
+                            return float(s.replace(",", "").strip())
+                        except:
+                            return 0.0
+                            
+                    current_item = {
+                        "Sl#": str(sl_num),
+                        "Description": desc,
+                        "Cpt Code": "",
+                        "Date": date_val,
+                        "Qty": clean_num(qty_val),
+                        "Quantity": clean_num(qty_val),
+                        "Rate": clean_num(rate_val),
                         "Price": clean_num(rate_val),
-                        "NetAmt": clean_num(gross_val)
+                        "Gross Amount": clean_num(gross_val),
+                        "NetAmt": clean_num(gross_val),
+                        "Discount": clean_num(disc_val),
+                        "item_type": "item",
+                        "Particulars": desc,
                     }
                     items.append(current_item)
                     continue
@@ -1714,16 +1826,20 @@ def extract_with_llm(pages_text: list[str], filename: str, file_path: Optional[P
     total_pages = len(pages_text)
     log.info("  [LLM] Document has %d page(s) — processing in parallel.", total_pages)
 
+    pages_results = []
     if file_path and file_path.exists():
         det_pages = extract_deterministic_table_rows_from_pdf(file_path)
         det_total_items = sum(len(p.get("items", [])) for p in det_pages)
         if det_total_items >= 5:
-            log.info("  [DETERMINISTIC EXTRACTOR] Found %d structured table rows via spatial row alignment across %d pages in %s! Bypassing LLM truncation.", det_total_items, len(det_pages), filename)
+            log.info("  [DETERMINISTIC EXTRACTOR] Found %d structured table rows via spatial PDF alignment in %s! Bypassing LLM.", det_total_items, filename)
             pages_results = det_pages
-        else:
-            pages_results = []
-    else:
-        pages_results = []
+
+    if not pages_results:
+        det_text_pages = extract_deterministic_table_rows_from_text(pages_text)
+        det_text_total = sum(len(p.get("items", [])) for p in det_text_pages)
+        if det_text_total >= 5:
+            log.info("  [DETERMINISTIC EXTRACTOR] Found %d structured table rows via text regex alignment in %s! Bypassing LLM.", det_text_total, filename)
+            pages_results = det_text_pages
 
     if not pages_results:
         results_by_index: dict[int, dict] = {}
@@ -1927,12 +2043,12 @@ def extract_with_llm(pages_text: list[str], filename: str, file_path: Optional[P
                 else:
                     log.warning("  [RECONCILIATION] Extracted sum (%.2f) != Invoice Total (%.2f). Discrepancy: %+.2f", extracted_sum, target_total, diff)
                     if diff > 1.0 and len(pages_results) > 0:
-                        log.info("  [RECONCILIATION] Triggering AI Self-Correction loop to recover missing $%.2f...", diff)
+                        log.info("  [RECONCILIATION] Triggering AI Self-Correction loop to recover missing $%.2f (Escalating to heavy accuracy model %s)...", diff, OLLAMA_HEAVY_MODEL)
                         rec_prompt = [
                             {"role": "system", "content": "You are a hospital billing audit AI."},
                             {"role": "user", "content": f"Invoice text:\n{doc_full_text[:5000]}\n\nExtracted items total {extracted_sum}, but document footer total is {target_total}. Find the missing item costing approximately {diff}. Return ONLY JSON format: {{\"items\": [{{\"Particulars\": \"missing item\", \"Quantity\": 1, \"Price\": {diff}, \"NetAmt\": {diff}}}]}}"}
                         ]
-                        rec_reply = _call_llm(rec_prompt, "self-correction recovery")
+                        rec_reply = _call_llm(rec_prompt, "self-correction recovery", model_override=OLLAMA_HEAVY_MODEL)
                         if rec_reply:
                             rec_clean = _parse_reply(rec_reply, 99)
                             if rec_clean and rec_clean.get("items"):
@@ -2293,11 +2409,14 @@ def stitch_cross_page_splits(pages_text: list[str]) -> list[str]:
 
 
 def process_file(file_path: Path) -> None:
+    import time
+    start_time = time.perf_counter()
     log.info("Processing: %s", file_path.name)
 
     pages_text = extract_text(file_path)
     if not pages_text:
-        log.warning("  Skipping %s — no text could be extracted.", file_path.name)
+        elapsed = time.perf_counter() - start_time
+        log.warning("  Skipping %s — no text could be extracted (took %.2fs).", file_path.name, elapsed)
         return
 
     pages_text = stitch_cross_page_splits(pages_text)
@@ -2305,8 +2424,14 @@ def process_file(file_path: Path) -> None:
     result = extract_with_llm(pages_text, file_path.name, file_path=file_path)
 
     if result is None:
-        log.warning("  Skipping %s — LLM extraction returned nothing.", file_path.name)
+        elapsed = time.perf_counter() - start_time
+        log.warning("  Skipping %s — LLM extraction returned nothing (took %.2fs).", file_path.name, elapsed)
         return
+
+    elapsed_seconds = time.perf_counter() - start_time
+    if isinstance(result, dict):
+        result["processing_time_seconds"] = round(elapsed_seconds, 2)
+    log.info("  [TIMING] Completed %s in %.2f seconds (%.2f minutes).", file_path.name, elapsed_seconds, elapsed_seconds / 60.0)
 
     output_path = OUTPUT_DIR / (file_path.stem + ".json")
     save_json(result, output_path)
@@ -2328,8 +2453,12 @@ def run_on_paths(file_paths: list[Path]) -> None:
     for p in file_paths:
         if not p.exists():
             log.error("File not found: %s", p)
+        elif p.is_dir():
+            for sub_f in sorted(p.glob("*.*")):
+                if sub_f.is_file() and sub_f.suffix.lower() in SUPPORTED_EXTENSIONS:
+                    valid.append(sub_f)
         elif not p.is_file():
-            log.error("Not a file: %s", p)
+            log.error("Not a file or directory: %s", p)
         elif p.suffix.lower() not in SUPPORTED_EXTENSIONS:
             log.error(
                 "Unsupported file type '%s' for %s", p.suffix, p.name
@@ -2396,4 +2525,10 @@ if __name__ == "__main__":
     elif args.files:
         run_on_paths(args.files)
     else:
-        parser.print_help()
+        default_dir = Path("docs") if Path("docs").exists() else Path(".")
+        found_files = sorted([f for f in default_dir.glob("*.*") if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS])
+        if found_files:
+            log.info("No files specified. Automatically scanning '%s' folder...", default_dir)
+            run_on_paths(found_files)
+        else:
+            parser.print_help()
